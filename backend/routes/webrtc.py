@@ -44,7 +44,7 @@ class InitiateCallRequest(BaseModel):
     from_number: str
 
 
-@router.post("/webrtc/initiate")
+@router.post("/initiate")
 async def initiate_call(request: InitiateCallRequest):
     """Create PSTN call - WebRTC client in browser will auto-register"""
     try:

@@ -253,7 +253,7 @@ export function DialerScreen({
   const [webrtcError, setWebrtcError] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
 
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "https://trimarkity-cloud-telephony.onrender.com"
 
   const { subscribe } = useWebhookCalls(apiUrl)
   const {

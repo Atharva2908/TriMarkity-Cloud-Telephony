@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from routes import analytics_ws
 
+
 # ----------------------------
 # Logging Setup
 # ----------------------------
@@ -19,12 +20,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 # ----------------------------
 # Configuration
 # ----------------------------
 APP_NAME = os.getenv("APP_NAME", "Telnyx Calling System")
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+
+# UPDATED CORS Configuration - Add your Vercel URL
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,https://tri-markity-cloud-telephony.vercel.app").split(",")
+
 
 # ----------------------------
 # WebSocket Manager
@@ -56,6 +61,7 @@ class CallStatusManager:
 
 call_manager = CallStatusManager()
 
+
 # ----------------------------
 # Lifespan
 # ----------------------------
@@ -63,9 +69,11 @@ call_manager = CallStatusManager()
 async def lifespan(app: FastAPI):
     logger.info(f"🚀 Starting {APP_NAME}")
     logger.info(f"📊 Environment: {ENVIRONMENT}")
+    logger.info(f"🌐 CORS Origins: {CORS_ORIGINS}")
     yield
     logger.info("💤 Shutting down...")
     db.close()
+
 
 # ----------------------------
 # FastAPI App
@@ -77,16 +85,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
 # ----------------------------
-# CORS Middleware
+# CORS Middleware - UPDATED
 # ----------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if CORS_ORIGINS == ["*"] else CORS_ORIGINS,
+    allow_origins=CORS_ORIGINS,  # Now properly configured
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ----------------------------
 # Core Routes
@@ -122,6 +132,7 @@ except ImportError as e:
 except Exception as e:
     logger.error(f"❌ Error loading core routes: {e}")
 
+
 # ----------------------------
 # Telnyx Integration
 # ----------------------------
@@ -140,6 +151,7 @@ except Exception as e:
     logger.error(f"❌ Error loading Telnyx integration: {e}")
     import traceback
     traceback.print_exc()
+
 
 # ----------------------------
 # WebSocket Endpoint
@@ -161,6 +173,7 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}")
         await call_manager.disconnect(websocket)
 
+
 # ----------------------------
 # Health & Status Endpoints
 # ----------------------------
@@ -179,6 +192,7 @@ async def health():
         "timestamp": datetime.utcnow().isoformat(),
     }
 
+
 @app.get("/")
 async def root():
     return {
@@ -187,6 +201,7 @@ async def root():
         "docs": "/docs",
         "health": "/health",
     }
+
 
 @app.get("/api/status")
 async def api_status():
@@ -201,8 +216,10 @@ async def api_status():
         },
     }
 
+
 def get_call_manager():
     return call_manager
+
 
 # ----------------------------
 # Run Uvicorn (Render-compatible)

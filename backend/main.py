@@ -212,10 +212,13 @@ def get_call_manager():
 if __name__ == "__main__":
     import uvicorn
 
+    # Use the port Render provides, fallback to 8000
+    port = int(os.environ.get("PORT", 8000))
+
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
+        port=port,
         log_level="info",
         reload=True if ENVIRONMENT == "development" else False,
     )

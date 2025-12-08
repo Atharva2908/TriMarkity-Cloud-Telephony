@@ -1,36 +1,37 @@
-from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import logging
 from database import db
-import asyncio
-from typing import Set
 from datetime import datetime
 import os
 import importlib.util
 import sys
 from pathlib import Path
 from routes import analytics_ws
-from routes import webrtc 
 
-# Setup logging
+# ----------------------------
+# Logging Setup
+# ----------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# Configuration from environment variables
+# ----------------------------
+# Configuration
+# ----------------------------
 APP_NAME = os.getenv("APP_NAME", "Telnyx Calling System")
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
-
-# WebSocket manager for real-time updates
+# ----------------------------
+# WebSocket Manager
+# ----------------------------
 class CallStatusManager:
     def __init__(self):
-        self.active_connections: Set[WebSocket] = set()
+        self.active_connections: set[WebSocket] = set()
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -42,7 +43,6 @@ class CallStatusManager:
         logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
 
     async def broadcast(self, message: dict):
-        """Broadcast message to all connected clients"""
         disconnected = set()
         for connection in self.active_connections:
             try:
@@ -50,15 +50,15 @@ class CallStatusManager:
             except Exception as e:
                 logger.error(f"Error broadcasting to client: {e}")
                 disconnected.add(connection)
-
-        # Clean up disconnected clients
         for conn in disconnected:
             self.active_connections.discard(conn)
 
 
 call_manager = CallStatusManager()
 
-
+# ----------------------------
+# Lifespan
+# ----------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"🚀 Starting {APP_NAME}")
@@ -67,7 +67,9 @@ async def lifespan(app: FastAPI):
     logger.info("💤 Shutting down...")
     db.close()
 
-
+# ----------------------------
+# FastAPI App
+# ----------------------------
 app = FastAPI(
     title=APP_NAME,
     description="Telnyx-powered calling and CRM system",
@@ -75,7 +77,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware
+# ----------------------------
+# CORS Middleware
+# ----------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if CORS_ORIGINS == ["*"] else CORS_ORIGINS,
@@ -84,7 +88,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Import core routes
+# ----------------------------
+# Core Routes
+# ----------------------------
 try:
     from routes import (
         contacts,
@@ -110,64 +116,60 @@ try:
     app.include_router(analytics_ws.router, tags=["analytics-ws"])
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     app.include_router(recordings.router, prefix="/api/recordings", tags=["recordings"])
-    app.include_router(webrtc.router, prefix="/api/webrtc", tags=["WebRTC"])
     logger.info("✅ Core routes loaded successfully")
 except ImportError as e:
-    logger.warning(f"⚠️  Some core routes not available: {e}")
+    logger.warning(f"⚠️ Some core routes not available: {e}")
 except Exception as e:
     logger.error(f"❌ Error loading core routes: {e}")
 
-# Import Telnyx integration with dynamic import (real integration)
+# ----------------------------
+# Telnyx Integration
+# ----------------------------
 try:
     telnyx_file = Path(__file__).parent / "routes" / "telnyx-integration.py"
-
     if telnyx_file.exists():
-        spec = importlib.util.spec_from_file_location("telnyx-integration", telnyx_file)
+        spec = importlib.util.spec_from_file_location("telnyx_integration", telnyx_file)
         telnyx_module = importlib.util.module_from_spec(spec)
         sys.modules["telnyx_integration"] = telnyx_module
         spec.loader.exec_module(telnyx_module)
-
         app.include_router(telnyx_module.router, prefix="/api/telnyx", tags=["telnyx"])
         logger.info("✅ Telnyx integration loaded successfully")
     else:
-        logger.warning("⚠️  telnyx-integration.py not found in routes folder")
+        logger.warning("⚠️ telnyx-integration.py not found in routes folder")
 except Exception as e:
     logger.error(f"❌ Error loading Telnyx integration: {e}")
     import traceback
-
     traceback.print_exc()
 
-# NOTE: Removed old workflow/demo Telnyx routes (telnyx_api, call_status)
-
+# ----------------------------
+# WebSocket Endpoint
+# ----------------------------
 @app.websocket("/ws/calls")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time call updates"""
     await call_manager.connect(websocket)
     try:
         while True:
             data = await websocket.receive_text()
             if data and "ping" in data.lower():
-                await websocket.send_json(
-                    {
-                        "type": "pong",
-                        "timestamp": datetime.utcnow().isoformat(),
-                    }
-                )
+                await websocket.send_json({
+                    "type": "pong",
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
     except WebSocketDisconnect:
         await call_manager.disconnect(websocket)
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         await call_manager.disconnect(websocket)
 
-
+# ----------------------------
+# Health & Status Endpoints
+# ----------------------------
 @app.get("/health")
 async def health():
-    """Health check endpoint"""
     try:
         db_status = "connected" if db.get_db() else "disconnected"
     except Exception:
         db_status = "error"
-
     return {
         "status": "healthy",
         "app": APP_NAME,
@@ -177,10 +179,8 @@ async def health():
         "timestamp": datetime.utcnow().isoformat(),
     }
 
-
 @app.get("/")
 async def root():
-    """Root endpoint"""
     return {
         "message": f"Welcome to {APP_NAME}",
         "version": "1.0.0",
@@ -188,10 +188,8 @@ async def root():
         "health": "/health",
     }
 
-
 @app.get("/api/status")
 async def api_status():
-    """API status endpoint with available routes"""
     return {
         "status": "online",
         "active_websockets": len(call_manager.active_connections),
@@ -203,20 +201,17 @@ async def api_status():
         },
     }
 
-
 def get_call_manager():
-    """Dependency injection for call manager"""
     return call_manager
 
-
+# ----------------------------
+# Run Uvicorn (Render-compatible)
+# ----------------------------
 if __name__ == "__main__":
     import uvicorn
-
-    # Use the port Render provides, fallback to 8000
     port = int(os.environ.get("PORT", 8000))
-
     uvicorn.run(
-        app,
+        "main:app",
         host="0.0.0.0",
         port=port,
         log_level="info",

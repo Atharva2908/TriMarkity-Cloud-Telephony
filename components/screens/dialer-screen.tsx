@@ -16,6 +16,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { useCallApi } from "@/hooks/use-call-api"
 import { useWebhookCalls } from "@/hooks/use-webhook-calls"
+import { useApiConfig } from "@/hooks/use-api-config"
 import type { CallState, CallStatus } from "@/hooks/use-call-api"
 import { TelnyxRTC } from '@telnyx/webrtc'
 
@@ -45,71 +46,72 @@ const countryCodes = [
   { country: "Argentina", code: "+54" },
   { country: "Armenia", code: "+374" },
   { country: "Aruba", code: "+297" },
-  { country: "Ascension Island", code: "+247" },
   { country: "Australia", code: "+61" },
   { country: "Austria", code: "+43" },
   { country: "Azerbaijan", code: "+994" },
+  { country: "Bahamas", code: "+1242" },
   { country: "Bahrain", code: "+973" },
   { country: "Bangladesh", code: "+880" },
+  { country: "Barbados", code: "+1246" },
   { country: "Belarus", code: "+375" },
   { country: "Belgium", code: "+32" },
   { country: "Belize", code: "+501" },
   { country: "Benin", code: "+229" },
+  { country: "Bermuda", code: "+1441" },
   { country: "Bhutan", code: "+975" },
   { country: "Bolivia", code: "+591" },
-  { country: "Bosnia & Herzegovina", code: "+387" },
+  { country: "Bosnia and Herzegovina", code: "+387" },
   { country: "Botswana", code: "+267" },
   { country: "Brazil", code: "+55" },
   { country: "Brunei", code: "+673" },
   { country: "Bulgaria", code: "+359" },
   { country: "Burkina Faso", code: "+226" },
   { country: "Burundi", code: "+257" },
+  { country: "Cambodia", code: "+855" },
   { country: "Cameroon", code: "+237" },
+  { country: "Canada", code: "+1" },
   { country: "Cape Verde", code: "+238" },
+  { country: "Cayman Islands", code: "+1345" },
   { country: "Central African Republic", code: "+236" },
   { country: "Chad", code: "+235" },
   { country: "Chile", code: "+56" },
   { country: "China", code: "+86" },
   { country: "Colombia", code: "+57" },
   { country: "Comoros", code: "+269" },
-  { country: "Cook Islands", code: "+682" },
+  { country: "Congo", code: "+242" },
   { country: "Costa Rica", code: "+506" },
-  { country: "Côte d'Ivoire", code: "+225" },
   { country: "Croatia", code: "+385" },
   { country: "Cuba", code: "+53" },
   { country: "Cyprus", code: "+357" },
   { country: "Czech Republic", code: "+420" },
   { country: "Denmark", code: "+45" },
-  { country: "Diego Garcia", code: "+246" },
   { country: "Djibouti", code: "+253" },
-  { country: "DR Congo", code: "+243" },
+  { country: "Dominica", code: "+1767" },
+  { country: "Dominican Republic", code: "+1809" },
   { country: "Ecuador", code: "+593" },
   { country: "Egypt", code: "+20" },
   { country: "El Salvador", code: "+503" },
   { country: "Equatorial Guinea", code: "+240" },
   { country: "Eritrea", code: "+291" },
   { country: "Estonia", code: "+372" },
-  { country: "Eswatini", code: "+268" },
   { country: "Ethiopia", code: "+251" },
-  { country: "Falkland Islands", code: "+500" },
-  { country: "Faroe Islands", code: "+298" },
   { country: "Fiji", code: "+679" },
   { country: "Finland", code: "+358" },
   { country: "France", code: "+33" },
-  { country: "French Polynesia", code: "+689" },
   { country: "Gabon", code: "+241" },
   { country: "Gambia", code: "+220" },
   { country: "Georgia", code: "+995" },
   { country: "Germany", code: "+49" },
   { country: "Ghana", code: "+233" },
-  { country: "Gibraltar", code: "+350" },
   { country: "Greece", code: "+30" },
-  { country: "Greenland", code: "+299" },
+  { country: "Grenada", code: "+1473" },
   { country: "Guatemala", code: "+502" },
   { country: "Guinea", code: "+224" },
   { country: "Guinea-Bissau", code: "+245" },
+  { country: "Guyana", code: "+592" },
   { country: "Haiti", code: "+509" },
   { country: "Honduras", code: "+504" },
+  { country: "Hong Kong", code: "+852" },
   { country: "Hungary", code: "+36" },
   { country: "Iceland", code: "+354" },
   { country: "India", code: "+91" },
@@ -118,13 +120,16 @@ const countryCodes = [
   { country: "Iraq", code: "+964" },
   { country: "Ireland", code: "+353" },
   { country: "Israel", code: "+972" },
-  { country: "Italy/Vatican", code: "+39" },
+  { country: "Italy", code: "+39" },
+  { country: "Jamaica", code: "+1876" },
   { country: "Japan", code: "+81" },
+  { country: "Jordan", code: "+962" },
   { country: "Kazakhstan", code: "+7" },
   { country: "Kenya", code: "+254" },
   { country: "Kiribati", code: "+686" },
-  { country: "Kosovo", code: "+383" },
+  { country: "Kuwait", code: "+965" },
   { country: "Kyrgyzstan", code: "+996" },
+  { country: "Laos", code: "+856" },
   { country: "Latvia", code: "+371" },
   { country: "Lebanon", code: "+961" },
   { country: "Lesotho", code: "+266" },
@@ -133,6 +138,8 @@ const countryCodes = [
   { country: "Liechtenstein", code: "+423" },
   { country: "Lithuania", code: "+370" },
   { country: "Luxembourg", code: "+352" },
+  { country: "Macau", code: "+853" },
+  { country: "Macedonia", code: "+389" },
   { country: "Madagascar", code: "+261" },
   { country: "Malawi", code: "+265" },
   { country: "Malaysia", code: "+60" },
@@ -155,32 +162,33 @@ const countryCodes = [
   { country: "Nauru", code: "+674" },
   { country: "Nepal", code: "+977" },
   { country: "Netherlands", code: "+31" },
-  { country: "New Caledonia", code: "+687" },
   { country: "New Zealand", code: "+64" },
   { country: "Nicaragua", code: "+505" },
   { country: "Niger", code: "+227" },
   { country: "Nigeria", code: "+234" },
-  { country: "Niue", code: "+683" },
-  { country: "North Macedonia", code: "+389" },
+  { country: "North Korea", code: "+850" },
   { country: "Norway", code: "+47" },
+  { country: "Oman", code: "+968" },
   { country: "Pakistan", code: "+92" },
   { country: "Palau", code: "+680" },
   { country: "Palestine", code: "+970" },
   { country: "Panama", code: "+507" },
   { country: "Papua New Guinea", code: "+675" },
+  { country: "Paraguay", code: "+595" },
   { country: "Peru", code: "+51" },
   { country: "Philippines", code: "+63" },
   { country: "Poland", code: "+48" },
   { country: "Portugal", code: "+351" },
   { country: "Qatar", code: "+974" },
-  { country: "Republic of the Congo", code: "+242" },
   { country: "Romania", code: "+40" },
   { country: "Russia", code: "+7" },
   { country: "Rwanda", code: "+250" },
-  { country: "Saint Pierre & Miquelon", code: "+508" },
+  { country: "Saint Kitts and Nevis", code: "+1869" },
+  { country: "Saint Lucia", code: "+1758" },
+  { country: "Saint Vincent and the Grenadines", code: "+1784" },
   { country: "Samoa", code: "+685" },
   { country: "San Marino", code: "+378" },
-  { country: "São Tomé & Príncipe", code: "+239" },
+  { country: "Sao Tome and Principe", code: "+239" },
   { country: "Saudi Arabia", code: "+966" },
   { country: "Senegal", code: "+221" },
   { country: "Serbia", code: "+381" },
@@ -193,10 +201,12 @@ const countryCodes = [
   { country: "Somalia", code: "+252" },
   { country: "South Africa", code: "+27" },
   { country: "South Korea", code: "+82" },
+  { country: "South Sudan", code: "+211" },
   { country: "Spain", code: "+34" },
   { country: "Sri Lanka", code: "+94" },
   { country: "Sudan", code: "+249" },
   { country: "Suriname", code: "+597" },
+  { country: "Swaziland", code: "+268" },
   { country: "Sweden", code: "+46" },
   { country: "Switzerland", code: "+41" },
   { country: "Syria", code: "+963" },
@@ -206,26 +216,27 @@ const countryCodes = [
   { country: "Thailand", code: "+66" },
   { country: "Timor-Leste", code: "+670" },
   { country: "Togo", code: "+228" },
-  { country: "Tokelau", code: "+690" },
   { country: "Tonga", code: "+676" },
+  { country: "Trinidad and Tobago", code: "+1868" },
   { country: "Tunisia", code: "+216" },
   { country: "Turkey", code: "+90" },
   { country: "Turkmenistan", code: "+993" },
   { country: "Tuvalu", code: "+688" },
-  { country: "UAE", code: "+971" },
   { country: "Uganda", code: "+256" },
   { country: "Ukraine", code: "+380" },
+  { country: "United Arab Emirates", code: "+971" },
   { country: "United Kingdom", code: "+44" },
-  { country: "United States/Canada", code: "+1" },
+  { country: "United States", code: "+1" },
   { country: "Uruguay", code: "+598" },
   { country: "Uzbekistan", code: "+998" },
   { country: "Vanuatu", code: "+678" },
+  { country: "Vatican City", code: "+379" },
   { country: "Venezuela", code: "+58" },
   { country: "Vietnam", code: "+84" },
-  { country: "Wallis & Futuna", code: "+681" },
+  { country: "Yemen", code: "+967" },
   { country: "Zambia", code: "+260" },
-  { country: "Zimbabwe", code: "+263" }
-];
+  { country: "Zimbabwe", code: "+263" },
+]
 
 function isE164(number: string) {
   return /^\+\d{10,15}$/.test(number)
@@ -253,9 +264,10 @@ export function DialerScreen({
   const [webrtcError, setWebrtcError] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
 
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "https://trimarkity-cloud-telephony.onrender.com"
+  // Use API config hook
+  const { apiUrl } = useApiConfig()
 
-  const { subscribe } = useWebhookCalls(apiUrl)
+  const { subscribe, isConnected } = useWebhookCalls(apiUrl)
   const {
     callState,
     setCallState,
@@ -287,73 +299,69 @@ export function DialerScreen({
       })
 
       telnyxClient.on('telnyx.error', (error: any) => {
-        console.error('❌ Telnyx WebRTC error:', error)
-        
         // Suppress normal disconnect/bye errors
         const errorMsg = error?.message || JSON.stringify(error)
-        if (errorMsg.includes('bye') || errorMsg.includes('failed!')) {
+        if (errorMsg.includes('bye') || errorMsg.includes('failed!') || errorMsg === '{}') {
           console.log('ℹ️ Normal call disconnect (bye)')
           return
         }
         
+        console.error('❌ Telnyx WebRTC error:', error)
         setWebrtcError('WebRTC connection failed')
         setWebrtcReady(false)
       })
 
-      // Replace the audio handling section in the telnyx.notification handler (around line 375-395)
-
-    telnyxClient.on('telnyx.notification', (notification: any) => {
-    console.log('📞 WebRTC Notification:', notification)
-  
-  if (notification.type === 'callUpdate') {
-    const call = notification.call
-    currentWebRTCCall = call
-
-    // Attach remote audio stream to <audio> element and force play
-    if (call.remoteStream && audioRef.current) {
-      // Only update if it's a different stream
-      if (audioRef.current.srcObject !== call.remoteStream) {
-        audioRef.current.srcObject = call.remoteStream
-        
-        // Force play the audio (required for browser autoplay policies)
-        audioRef.current.play().catch((err) => {
-          console.error('❌ Audio play error:', err)
-          // Try to play again after user interaction
-          const playAudio = () => {
-            audioRef.current?.play()
-            document.removeEventListener('click', playAudio)
-          }
-          document.addEventListener('click', playAudio, { once: true })
-        })
-        
-        console.log('🔊 Remote audio stream attached')
-      }
-    }
-
-    // Sync WebRTC call state with UI
-    if (call.state === 'new') {
-      console.log('📱 WebRTC Call: new (incoming to browser)')
-    } else if (call.state === 'trying') {
-      console.log('📱 WebRTC Call: trying')
-    } else if (call.state === 'ringing') {
-      console.log('📱 WebRTC Call: ringing')
-      setCallState(prev => prev ? { ...prev, status: 'ringing' } : prev)
-    } else if (call.state === 'active') {
-      console.log('📱 WebRTC Call: active (audio flowing)')
-      setCallState(prev => prev ? { ...prev, status: 'active' } : prev)
-    } else if (call.state === 'done') {
-      console.log('📱 WebRTC Call: done')
-      setCallState(prev => prev ? { ...prev, status: 'ended' } : prev)
-      currentWebRTCCall = null
+      telnyxClient.on('telnyx.notification', (notification: any) => {
+        console.log('📞 WebRTC Notification:', notification)
       
-      // Clear audio stream safely
-      if (audioRef.current && audioRef.current.srcObject) {
-        audioRef.current.srcObject = null
-      }
-    }
-  }
-})
+        if (notification.type === 'callUpdate') {
+          const call = notification.call
+          currentWebRTCCall = call
 
+          // Attach remote audio stream to <audio> element and force play
+          if (call.remoteStream && audioRef.current) {
+            // Only update if it's a different stream
+            if (audioRef.current.srcObject !== call.remoteStream) {
+              audioRef.current.srcObject = call.remoteStream
+              
+              // Force play the audio (required for browser autoplay policies)
+              audioRef.current.play().catch((err) => {
+                console.error('❌ Audio play error:', err)
+                // Try to play again after user interaction
+                const playAudio = () => {
+                  audioRef.current?.play()
+                  document.removeEventListener('click', playAudio)
+                }
+                document.addEventListener('click', playAudio, { once: true })
+              })
+              
+              console.log('🔊 Remote audio stream attached')
+            }
+          }
+
+          // Sync WebRTC call state with UI
+          if (call.state === 'new') {
+            console.log('📱 WebRTC Call: new (incoming to browser)')
+          } else if (call.state === 'trying') {
+            console.log('📱 WebRTC Call: trying')
+          } else if (call.state === 'ringing') {
+            console.log('📱 WebRTC Call: ringing')
+            setCallState(prev => prev ? { ...prev, status: 'ringing' } : prev)
+          } else if (call.state === 'active') {
+            console.log('📱 WebRTC Call: active (audio flowing)')
+            setCallState(prev => prev ? { ...prev, status: 'active' } : prev)
+          } else if (call.state === 'done') {
+            console.log('📱 WebRTC Call: done')
+            setCallState(prev => prev ? { ...prev, status: 'ended' } : prev)
+            currentWebRTCCall = null
+            
+            // Clear audio stream safely
+            if (audioRef.current && audioRef.current.srcObject) {
+              audioRef.current.srcObject = null
+            }
+          }
+        }
+      })
 
       telnyxClient.connect()
     }
@@ -520,7 +528,7 @@ export function DialerScreen({
         
         currentWebRTCCall = telnyxClient.newCall({
           destinationNumber: fullDialedNumber,
-          callerNumber: data.from, // Use the actual caller ID from backend
+          callerNumber: data.from,
         })
 
         console.log('✅ WebRTC call created, waiting for ringing...')
@@ -619,13 +627,13 @@ export function DialerScreen({
       // Toggle mute on WebRTC call using muteAudio/unmuteAudio
       if (currentWebRTCCall) {
         if (callState?.isMuted) {
-          // Unmute - use unmuteAudio() method
+          // Unmute
           if (typeof currentWebRTCCall.unmuteAudio === 'function') {
             currentWebRTCCall.unmuteAudio()
             console.log('🎤 Audio unmuted')
           }
         } else {
-          // Mute - use muteAudio() method
+          // Mute
           if (typeof currentWebRTCCall.muteAudio === 'function') {
             currentWebRTCCall.muteAudio()
             console.log('🔇 Audio muted')
@@ -724,6 +732,20 @@ export function DialerScreen({
               />
               <span className="text-[10px] text-slate-400">
                 {webrtcReady ? "WebRTC Ready" : "Connecting..."}
+              </span>
+            </div>
+            
+            {/* WebSocket Status Indicator */}
+            <div className="flex items-center gap-1.5">
+              <Circle
+                className={`h-2 w-2 ${
+                  isConnected
+                    ? "fill-blue-500 text-blue-500"
+                    : "fill-gray-500 text-gray-500"
+                }`}
+              />
+              <span className="text-[10px] text-slate-400">
+                {isConnected ? "Live Updates" : "Offline"}
               </span>
             </div>
             
@@ -917,7 +939,7 @@ export function DialerScreen({
                 disabled={!lastDialedNumber || isConnecting || isCallActive}
                 size="lg"
                 variant="outline"
-                className="h-12 sm:h-14 w-full sm:w-40 rounded-2xl border-white/10 bg-slate-900/70 text-xs sm:text-sm text-slate-100 hover:border-emerald-400/60 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                className="h-12 sm:h-14 w-full sm:w-40 rounded-xl border-white/10 bg-slate-900/70 text-xs sm:text-sm text-slate-100 hover:border-emerald-400/60 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <RotateCcw className="mr-2 h-4 w-4" />
                 {lastDialedContact?.name ? `Redial ${lastDialedContact.name}` : "Redial"}

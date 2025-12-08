@@ -1,39 +1,88 @@
 "use client"
 
-import { useState, useCallback } from "react"
-import { Phone, PhoneOff, Volume2, Pause, Loader } from "lucide-react"
+import { useState, useCallback, useEffect } from "react"
+import { Phone, PhoneOff, Volume2, Pause, Loader2, Circle, Mic, MicOff } from "lucide-react"
+import { useApiConfig } from "@/hooks/use-api-config"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Card } from "@/components/ui/card"
+import { Textarea } from "@/components/ui/textarea"
+import { Switch } from "@/components/ui/switch"
 
 interface OutboundCallingProps {
-  apiUrl: string
-  demoMode: boolean
+  demoMode?: boolean
 }
 
 interface OutboundCall {
   call_id: string
   to_number: string
   from_number: string
-  status: "initiating" | "ringing" | "active" | "reconnecting" | "ended"
+  status: "initiating" | "ringing" | "active" | "reconnecting" | "ended" | "failed"
   duration: number
   is_recording: boolean
+  is_muted?: boolean
   tts_message?: string
   error?: string
 }
 
-export function OutboundCalling({ apiUrl, demoMode }: OutboundCallingProps) {
+export function OutboundCalling({ demoMode = false }: OutboundCallingProps) {
+  const { apiUrl } = useApiConfig()
   const [call, setCall] = useState<OutboundCall | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [toNumber, setToNumber] = useState("")
-  const [fromNumber, setFromNumber] = useState("+12125551234")
+  const [fromNumber, setFromNumber] = useState("")
+  const [availableNumbers, setAvailableNumbers] = useState<string[]>([])
   const [ttsMessage, setTtsMessage] = useState("")
   const [autoReconnect, setAutoReconnect] = useState(true)
-  const [autoHangup, setAutoHangup] = useState(60) // 60 seconds
+  const [autoHangup, setAutoHangup] = useState(60)
+  const [error, setError] = useState<string | null>(null)
+
+  // Fetch available numbers
+  useEffect(() => {
+    const fetchNumbers = async () => {
+      try {
+        const res = await fetch(`${apiUrl}/api/numbers/`)
+        if (res.ok) {
+          const data = await res.json()
+          const numbers = data.numbers || []
+          setAvailableNumbers(numbers.map((n: any) => n.phone_number))
+          if (numbers.length > 0 && !fromNumber) {
+            setFromNumber(numbers[0].phone_number)
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch phone numbers:", err)
+      }
+    }
+
+    if (!demoMode) {
+      fetchNumbers()
+    } else {
+      setAvailableNumbers(["+12125551234", "+14155551234"])
+      setFromNumber("+12125551234")
+    }
+  }, [apiUrl, demoMode, fromNumber])
+
+  // Call duration timer
+  useEffect(() => {
+    if (call?.status === "active") {
+      const timer = setInterval(() => {
+        setCall((prev) => (prev ? { ...prev, duration: prev.duration + 1 } : null))
+      }, 1000)
+
+      return () => clearInterval(timer)
+    }
+  }, [call?.status])
 
   const handleInitiateCall = useCallback(async () => {
-    if (!toNumber) return
+    if (!toNumber || !fromNumber) return
 
     setIsLoading(true)
+    setError(null)
+
     try {
       if (demoMode) {
+        // Demo mode simulation
         setCall({
           call_id: `demo-${Date.now()}`,
           to_number: toNumber,
@@ -41,6 +90,7 @@ export function OutboundCalling({ apiUrl, demoMode }: OutboundCallingProps) {
           status: "initiating",
           duration: 0,
           is_recording: false,
+          is_muted: false,
         })
         setTimeout(() => {
           setCall((prev) => (prev ? { ...prev, status: "ringing" } : null))
@@ -61,28 +111,33 @@ export function OutboundCalling({ apiUrl, demoMode }: OutboundCallingProps) {
           }),
         })
 
-        if (!response.ok) throw new Error("Failed to initiate call")
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}))
+          throw new Error(data.detail || "Failed to initiate call")
+        }
 
         const data = await response.json()
         setCall({
           call_id: data.call_id,
           to_number: toNumber,
           from_number: fromNumber,
-          status: data.status,
+          status: data.status || "initiating",
           duration: 0,
           is_recording: false,
+          is_muted: false,
         })
       }
-    } catch (error) {
-      console.error("Error initiating call:", error)
+    } catch (err) {
+      console.error("Error initiating call:", err)
+      setError(err instanceof Error ? err.message : "Failed to initiate call")
       setCall({
         call_id: `error-${Date.now()}`,
         to_number: toNumber,
         from_number: fromNumber,
-        status: "ended",
+        status: "failed",
         duration: 0,
         is_recording: false,
-        error: error instanceof Error ? error.message : "Failed to initiate call",
+        error: err instanceof Error ? err.message : "Failed to initiate call",
       })
     } finally {
       setIsLoading(false)
@@ -96,13 +151,15 @@ export function OutboundCalling({ apiUrl, demoMode }: OutboundCallingProps) {
       if (!demoMode) {
         await fetch(`${apiUrl}/api/calls/${call.call_id}/hangup`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
         })
       }
       setCall(null)
       setToNumber("")
-    } catch (error) {
-      console.error("Error hanging up:", error)
+      setTtsMessage("")
+      setError(null)
+    } catch (err) {
+      console.error("Error hanging up:", err)
+      setError("Failed to hang up call")
     }
   }, [call, apiUrl, demoMode])
 
@@ -111,177 +168,304 @@ export function OutboundCalling({ apiUrl, demoMode }: OutboundCallingProps) {
 
     try {
       if (!demoMode) {
-        const endpoint = call.is_recording
-          ? `/api/calls/${call.call_id}/recording/stop`
-          : `/api/calls/${call.call_id}/recording/start`
-
-        await fetch(`${apiUrl}${endpoint}`, {
+        await fetch(`${apiUrl}/api/webrtc/recording/${call.call_id}`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
         })
       }
 
       setCall((prev) => (prev ? { ...prev, is_recording: !prev.is_recording } : null))
-    } catch (error) {
-      console.error("Error toggling recording:", error)
+    } catch (err) {
+      console.error("Error toggling recording:", err)
+      setError("Failed to toggle recording")
     }
   }, [call, apiUrl, demoMode])
 
+  const handleToggleMute = useCallback(async () => {
+    if (!call || call.status !== "active") return
+
+    try {
+      if (!demoMode) {
+        await fetch(`${apiUrl}/api/webrtc/mute/${call.call_id}`, {
+          method: "POST",
+        })
+      }
+
+      setCall((prev) => (prev ? { ...prev, is_muted: !prev.is_muted } : null))
+    } catch (err) {
+      console.error("Error toggling mute:", err)
+      setError("Failed to toggle mute")
+    }
+  }, [call, apiUrl, demoMode])
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+  }
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case "initiating":
+        return "text-blue-500"
+      case "ringing":
+        return "text-amber-500"
+      case "active":
+        return "text-green-500"
+      case "reconnecting":
+        return "text-orange-500"
+      case "failed":
+        return "text-red-500"
+      case "ended":
+        return "text-slate-500"
+      default:
+        return "text-slate-400"
+    }
+  }
+
+  const getStatusLabel = (status: string) => {
+    switch (status) {
+      case "initiating":
+        return "Initiating Call..."
+      case "ringing":
+        return "Ringing..."
+      case "active":
+        return "Connected"
+      case "reconnecting":
+        return "Reconnecting..."
+      case "failed":
+        return "Call Failed"
+      case "ended":
+        return "Call Ended"
+      default:
+        return status
+    }
+  }
+
   if (call) {
     return (
-      <div className="bg-card rounded-lg border border-border p-6 space-y-4">
-        <h2 className="text-xl font-bold">Active Call</h2>
+      <Card className="p-6 space-y-4 bg-gradient-to-br from-slate-900/60 via-slate-900/40 to-slate-900/80 border-white/10">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-bold text-slate-50">Active Call</h2>
+          <div className="flex items-center gap-2">
+            <Circle
+              className={`w-3 h-3 ${
+                call.status === "active"
+                  ? "fill-green-500 text-green-500 animate-pulse"
+                  : "fill-blue-500 text-blue-500 animate-pulse"
+              }`}
+            />
+            <span className={`text-sm font-semibold ${getStatusColor(call.status)}`}>
+              {getStatusLabel(call.status)}
+            </span>
+          </div>
+        </div>
 
-        <div className="bg-input rounded-lg p-4 space-y-4">
+        {/* Call Info */}
+        <div className="bg-slate-950/60 rounded-lg border border-white/10 p-6 space-y-4">
           <div className="text-center">
-            <p className="text-sm text-muted-foreground mb-2">
-              {call.status === "initiating" && "Initiating..."}
-              {call.status === "ringing" && "Ringing..."}
-              {call.status === "active" && "Connected"}
-              {call.status === "reconnecting" && "Reconnecting..."}
-              {call.status === "ended" && "Call Ended"}
+            <p className="text-4xl font-mono font-bold text-slate-50 mb-2">{call.to_number}</p>
+            <p className="text-sm text-slate-400">
+              From: <span className="font-mono">{call.from_number}</span>
             </p>
-            <p className="text-3xl font-mono font-bold">{call.to_number}</p>
-            <p className="text-sm text-muted-foreground mt-2">From: {call.from_number}</p>
           </div>
 
           {call.status === "active" && (
-            <div className="text-center">
-              <p className="text-4xl font-mono font-bold text-accent">
-                {String(Math.floor(call.duration / 60)).padStart(2, "0")}:{String(call.duration % 60).padStart(2, "0")}
+            <div className="text-center pt-4 border-t border-white/10">
+              <p className="text-5xl font-mono font-bold text-emerald-300 animate-pulse">
+                {formatDuration(call.duration)}
               </p>
-              {call.is_recording && (
-                <p className="text-sm text-destructive mt-2 flex items-center justify-center gap-2">
-                  <div className="w-2 h-2 bg-destructive rounded-full animate-pulse" />
-                  Recording
-                </p>
-              )}
             </div>
           )}
+
+          {/* Status Indicators */}
+          <div className="flex items-center justify-center gap-4 pt-2">
+            {call.is_recording && (
+              <div className="flex items-center gap-2 text-rose-400">
+                <Circle className="w-2 h-2 fill-rose-500 text-rose-500 animate-pulse" />
+                <span className="text-xs font-medium">Recording</span>
+              </div>
+            )}
+            {call.is_muted && (
+              <div className="flex items-center gap-2 text-amber-400">
+                <MicOff className="w-3 h-3" />
+                <span className="text-xs font-medium">Muted</span>
+              </div>
+            )}
+          </div>
         </div>
 
+        {/* Call Controls */}
         {call.status === "active" && (
-          <div className="flex gap-2">
-            <button
-              onClick={handleToggleRecording}
-              className={`flex-1 p-3 rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors ${
-                call.is_recording
-                  ? "bg-destructive text-destructive-foreground hover:opacity-90"
-                  : "bg-secondary hover:bg-secondary/80"
-              }`}
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              onClick={handleToggleMute}
+              variant={call.is_muted ? "destructive" : "secondary"}
+              className="h-12 gap-2"
             >
-              {call.is_recording ? (
-                <>
-                  <Pause className="w-5 h-5" />
-                  Stop Recording
-                </>
-              ) : (
-                <>
-                  <Volume2 className="w-5 h-5" />
-                  Start Recording
-                </>
-              )}
-            </button>
+              {call.is_muted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+              {call.is_muted ? "Unmute" : "Mute"}
+            </Button>
+
+            <Button
+              onClick={handleToggleRecording}
+              variant={call.is_recording ? "destructive" : "secondary"}
+              className="h-12 gap-2"
+            >
+              {call.is_recording ? <Pause className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+              {call.is_recording ? "Stop Rec" : "Record"}
+            </Button>
           </div>
         )}
 
-        <button
+        {/* Error Display */}
+        {call.error && (
+          <Card className="p-3 bg-destructive/10 border-destructive/20">
+            <p className="text-destructive text-sm">{call.error}</p>
+          </Card>
+        )}
+
+        {/* Hangup Button */}
+        <Button
           onClick={handleHangup}
-          className="w-full bg-destructive text-destructive-foreground hover:opacity-90 rounded-lg p-3 font-bold flex items-center justify-center gap-2 transition-opacity"
+          className="w-full h-14 text-lg font-bold bg-gradient-to-r from-rose-500 to-red-600 hover:opacity-90 text-white gap-2"
         >
           <PhoneOff className="w-5 h-5" />
           End Call
-        </button>
-      </div>
+        </Button>
+      </Card>
     )
   }
 
   return (
-    <div className="bg-card rounded-lg border border-border p-6 space-y-4">
-      <h2 className="text-xl font-bold">Outbound Calling</h2>
+    <Card className="p-6 space-y-4 bg-gradient-to-br from-slate-900/60 via-slate-900/40 to-slate-900/80 border-white/10">
+      {/* Header */}
+      <div>
+        <h2 className="text-xl font-bold text-slate-50">Outbound Calling</h2>
+        <p className="text-sm text-slate-400 mt-1">Make automated outbound calls with TTS</p>
+      </div>
 
-      <div className="space-y-3">
+      <div className="space-y-4">
+        {/* To Number */}
         <div>
-          <label className="text-sm font-medium">To Number</label>
-          <input
+          <label htmlFor="to-number" className="text-sm font-medium text-slate-200 mb-2 block">
+            To Number *
+          </label>
+          <Input
+            id="to-number"
             type="tel"
             value={toNumber}
             onChange={(e) => setToNumber(e.target.value)}
             placeholder="+1234567890"
             disabled={isLoading}
-            className="w-full bg-input border border-border rounded-lg p-2 mt-1 disabled:opacity-50"
+            className="bg-slate-800 border-white/10 text-slate-100 font-mono placeholder:text-slate-500"
           />
         </div>
 
+        {/* From Number */}
         <div>
-          <label className="text-sm font-medium">From Number</label>
-          <select
-            value={fromNumber}
-            onChange={(e) => setFromNumber(e.target.value)}
-            disabled={isLoading}
-            className="w-full bg-input border border-border rounded-lg p-2 mt-1 disabled:opacity-50"
-          >
-            <option value="+12125551234">+1 (212) 555-1234</option>
-            <option value="+14155551234">+1 (415) 555-1234</option>
-          </select>
+          <label htmlFor="from-number" className="text-sm font-medium text-slate-200 mb-2 block">
+            From Number *
+          </label>
+          {availableNumbers.length === 0 ? (
+            <p className="text-sm text-amber-400">⚠️ No phone numbers available</p>
+          ) : (
+            <select
+              id="from-number"
+              value={fromNumber}
+              onChange={(e) => setFromNumber(e.target.value)}
+              disabled={isLoading}
+              className="w-full bg-slate-800 border border-white/10 rounded-lg p-3 text-slate-100 font-mono disabled:opacity-50"
+            >
+              {availableNumbers.map((number) => (
+                <option key={number} value={number}>
+                  {number}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
+        {/* TTS Message */}
         <div>
-          <label className="text-sm font-medium">TTS Message (Optional)</label>
-          <textarea
+          <label htmlFor="tts-message" className="text-sm font-medium text-slate-200 mb-2 block">
+            TTS Message (Optional)
+          </label>
+          <Textarea
+            id="tts-message"
             value={ttsMessage}
             onChange={(e) => setTtsMessage(e.target.value)}
             placeholder="Message to play when call is answered"
             disabled={isLoading}
-            className="w-full bg-input border border-border rounded-lg p-2 mt-1 disabled:opacity-50 h-20 resize-none"
+            className="bg-slate-800 border-white/10 text-slate-100 placeholder:text-slate-500 h-24 resize-none"
           />
+          <p className="text-xs text-slate-500 mt-1">
+            Text-to-speech will read this message when the call connects
+          </p>
         </div>
 
-        <div className="space-y-2">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
+        {/* Advanced Options */}
+        <div className="space-y-3 p-4 bg-slate-950/60 rounded-lg border border-white/10">
+          <h3 className="text-sm font-semibold text-slate-200">Advanced Options</h3>
+
+          <div className="flex items-center justify-between">
+            <label htmlFor="auto-reconnect" className="text-sm text-slate-300">
+              Auto-Reconnect on Failure
+            </label>
+            <Switch
+              id="auto-reconnect"
               checked={autoReconnect}
-              onChange={(e) => setAutoReconnect(e.target.checked)}
+              onCheckedChange={setAutoReconnect}
               disabled={isLoading}
-              className="w-4 h-4"
             />
-            <span className="text-sm">Auto-Reconnect on Failure</span>
-          </label>
+          </div>
 
           <div>
-            <label className="text-sm font-medium">Auto Hangup (seconds)</label>
-            <input
+            <label htmlFor="auto-hangup" className="text-sm font-medium text-slate-200 mb-2 block">
+              Auto Hangup After (seconds)
+            </label>
+            <Input
+              id="auto-hangup"
               type="number"
               min="30"
               max="600"
               value={autoHangup}
               onChange={(e) => setAutoHangup(Number(e.target.value))}
               disabled={isLoading}
-              className="w-full bg-input border border-border rounded-lg p-2 mt-1 disabled:opacity-50"
+              className="bg-slate-800 border-white/10 text-slate-100"
             />
-            <p className="text-xs text-muted-foreground mt-1">Call will automatically end after this duration</p>
+            <p className="text-xs text-slate-500 mt-1">
+              Call will automatically end after this duration (30-600 seconds)
+            </p>
           </div>
         </div>
-      </div>
 
-      <button
-        onClick={handleInitiateCall}
-        disabled={!toNumber || isLoading}
-        className="w-full bg-accent text-accent-foreground hover:opacity-90 disabled:opacity-50 rounded-lg p-3 font-bold flex items-center justify-center gap-2 transition-opacity"
-      >
-        {isLoading ? (
-          <>
-            <Loader className="w-5 h-5 animate-spin" />
-            Initiating...
-          </>
-        ) : (
-          <>
-            <Phone className="w-5 h-5" />
-            Call
-          </>
+        {/* Error Display */}
+        {error && (
+          <Card className="p-3 bg-destructive/10 border-destructive/20">
+            <p className="text-destructive text-sm">{error}</p>
+          </Card>
         )}
-      </button>
-    </div>
+
+        {/* Call Button */}
+        <Button
+          onClick={handleInitiateCall}
+          disabled={!toNumber || !fromNumber || isLoading}
+          className="w-full h-14 text-lg font-bold bg-gradient-to-r from-green-500 to-emerald-600 hover:opacity-90 disabled:opacity-50 text-white gap-2"
+        >
+          {isLoading ? (
+            <>
+              <Loader2 className="w-5 h-5 animate-spin" />
+              Initiating Call...
+            </>
+          ) : (
+            <>
+              <Phone className="w-5 h-5" />
+              Initiate Call
+            </>
+          )}
+        </Button>
+      </div>
+    </Card>
   )
 }

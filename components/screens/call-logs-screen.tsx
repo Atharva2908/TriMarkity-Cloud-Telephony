@@ -6,9 +6,10 @@ import { Download, Loader2, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useCallLogs } from "@/hooks/use-call-logs"
+import { useApiConfig } from "@/hooks/use-api-config"
 
 export function CallLogsScreen() {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+  const { apiUrl } = useApiConfig()
   const { logs, isLoading, error, searchLogs, getCallStats, mutate } = useCallLogs(apiUrl)
 
   const [filterStatus, setFilterStatus] = useState("all")
@@ -76,8 +77,25 @@ export function CallLogsScreen() {
     }
   }
 
+  const getStatusBadgeColor = (status: string) => {
+    switch (status) {
+      case "ended":
+      case "completed":
+        return "bg-green-500/10 border-green-500/20"
+      case "failed":
+      case "missed":
+        return "bg-red-500/10 border-red-500/20"
+      case "active":
+      case "dialing":
+        return "bg-yellow-500/10 border-yellow-500/20"
+      default:
+        return "bg-slate-500/10 border-slate-500/20"
+    }
+  }
+
   return (
     <div className="space-y-4">
+      {/* Stats Cards */}
       {stats && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Card className="p-4 bg-gradient-to-br from-primary/10 to-primary/5 border-primary/20">
@@ -86,7 +104,9 @@ export function CallLogsScreen() {
           </Card>
           <Card className="p-4 bg-gradient-to-br from-green-500/10 to-green-500/5 border-green-500/20">
             <div className="text-xs text-muted-foreground font-semibold">Completed</div>
-            <div className="text-2xl font-bold text-green-600 dark:text-green-400 mt-1">{stats.completed_calls}</div>
+            <div className="text-2xl font-bold text-green-600 dark:text-green-400 mt-1">
+              {stats.completed_calls}
+            </div>
           </Card>
           <Card className="p-4 bg-gradient-to-br from-red-500/10 to-red-500/5 border-red-500/20">
             <div className="text-xs text-muted-foreground font-semibold">Failed</div>
@@ -99,7 +119,7 @@ export function CallLogsScreen() {
         </div>
       )}
 
-      {/* Search and Filters */}
+      {/* Search and Refresh */}
       <div className="flex flex-col sm:flex-row gap-2 sm:gap-4">
         <Input
           placeholder="Search by number or notes..."
@@ -107,11 +127,13 @@ export function CallLogsScreen() {
           onChange={(e) => setSearchQuery(e.target.value)}
           className="flex-1"
         />
-        <Button onClick={() => mutate()} variant="outline" size="sm">
-          <RefreshCw className="w-4 h-4" />
+        <Button onClick={() => mutate()} variant="outline" size="sm" className="sm:w-auto">
+          <RefreshCw className="w-4 h-4 mr-2" />
+          Refresh
         </Button>
       </div>
 
+      {/* Status Filters */}
       <div className="flex gap-2 flex-wrap">
         {["all", "ended", "active", "failed"].map((status) => (
           <Button
@@ -126,6 +148,7 @@ export function CallLogsScreen() {
         ))}
       </div>
 
+      {/* Loading State */}
       {isLoading && (
         <Card className="p-8 text-center">
           <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
@@ -133,42 +156,74 @@ export function CallLogsScreen() {
         </Card>
       )}
 
+      {/* Error State */}
       {error && (
         <Card className="p-4 bg-destructive/10 border-destructive/20">
           <p className="text-destructive text-sm">Failed to load call logs. Please try again.</p>
         </Card>
       )}
 
+      {/* Call Logs List */}
       <div className="space-y-2">
         {!isLoading && filteredLogs.length === 0 ? (
-          <Card className="p-8 text-center text-muted-foreground">No call logs found</Card>
+          <Card className="p-8 text-center text-muted-foreground">
+            {searchQuery || filterStatus !== "all" ? "No matching call logs found" : "No call logs yet"}
+          </Card>
         ) : (
           filteredLogs.map((log) => (
-            <Card key={log._id} className="p-4 hover:bg-secondary/50 transition-colors">
-              <div className="flex items-center justify-between gap-4">
+            <Card
+              key={log._id}
+              className={`p-4 hover:bg-secondary/50 transition-colors border ${getStatusBadgeColor(log.status)}`}
+            >
+              <div className="flex items-start justify-between gap-4">
                 <div className="flex-1 min-w-0">
-                  <p className="font-semibold">{log.to_number}</p>
+                  <div className="flex items-center gap-2 mb-1">
+                    <p className="font-semibold text-foreground">{log.to_number}</p>
+                    <span
+                      className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${getStatusBadgeColor(
+                        log.status,
+                      )} ${getStatusColor(log.status)}`}
+                    >
+                      {log.status.toUpperCase()}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    From: {log.from_number || "Unknown"}
+                  </p>
                   <p className="text-xs text-muted-foreground">{formatDate(log.created_at)}</p>
-                  {log.notes && <p className="text-xs text-muted-foreground mt-1">{log.notes}</p>}
+                  {log.notes && (
+                    <p className="text-xs text-muted-foreground mt-2 p-2 bg-secondary/50 rounded border border-border">
+                      📝 {log.notes}
+                    </p>
+                  )}
                 </div>
-                <div className="text-right">
-                  <p className="font-mono text-sm">{formatDuration(log.duration)}</p>
-                  <span className={`text-xs font-semibold ${getStatusColor(log.status)}`}>
-                    {log.status.toUpperCase()}
-                  </span>
+                <div className="flex items-center gap-2">
+                  <div className="text-right">
+                    <p className="font-mono text-sm font-semibold text-foreground">
+                      {formatDuration(log.duration)}
+                    </p>
+                    <p className="text-xs text-muted-foreground">duration</p>
+                  </div>
+                  {log.recording_url && (
+                    <Button size="sm" variant="ghost" asChild className="hover:bg-primary/10">
+                      <a href={log.recording_url} download target="_blank" rel="noopener noreferrer">
+                        <Download className="w-4 h-4" />
+                      </a>
+                    </Button>
+                  )}
                 </div>
-                {log.recording_url && (
-                  <Button size="sm" variant="ghost" asChild>
-                    <a href={log.recording_url} download target="_blank" rel="noopener noreferrer">
-                      <Download className="w-4 h-4" />
-                    </a>
-                  </Button>
-                )}
               </div>
             </Card>
           ))
         )}
       </div>
+
+      {/* Results Count */}
+      {!isLoading && filteredLogs.length > 0 && (
+        <div className="text-center text-xs text-muted-foreground">
+          Showing {filteredLogs.length} {filteredLogs.length === 1 ? "call" : "calls"}
+        </div>
+      )}
     </div>
   )
 }

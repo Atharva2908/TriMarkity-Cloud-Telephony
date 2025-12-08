@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from routes import analytics_ws
 
-
 # ----------------------------
 # Logging Setup
 # ----------------------------
@@ -20,16 +19,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 # ----------------------------
 # Configuration
 # ----------------------------
 APP_NAME = os.getenv("APP_NAME", "Telnyx Calling System")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
-# UPDATED CORS Configuration - Add your Vercel URL
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,https://tri-markity-cloud-telephony.vercel.app").split(",")
-
+# CORS Configuration - Add your Vercel URL and custom domain
+CORS_ORIGINS = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,https://tri-markity-cloud-telephony.vercel.app,https://ctp.trimarkity.app"
+).split(",")
+CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS]  # Clean whitespace
 
 # ----------------------------
 # WebSocket Manager
@@ -58,9 +59,7 @@ class CallStatusManager:
         for conn in disconnected:
             self.active_connections.discard(conn)
 
-
 call_manager = CallStatusManager()
-
 
 # ----------------------------
 # Lifespan
@@ -74,7 +73,6 @@ async def lifespan(app: FastAPI):
     logger.info("💤 Shutting down...")
     db.close()
 
-
 # ----------------------------
 # FastAPI App
 # ----------------------------
@@ -85,21 +83,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
 # ----------------------------
-# CORS Middleware - UPDATED
+# CORS Middleware
 # ----------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,  # Now properly configured
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
 # ----------------------------
-# Core Routes
+# Core Routes - FIXED PREFIXES
 # ----------------------------
 try:
     from routes import (
@@ -115,23 +111,26 @@ try:
         recordings,
     )
 
-    app.include_router(contacts.router, prefix="/api/contacts", tags=["contacts"])
-    app.include_router(calls.router, prefix="/api/calls", tags=["calls"])
-    app.include_router(webrtc.router, prefix="/api/webrtc", tags=["webrtc"])
-    app.include_router(outbound.router, prefix="/api/outbound", tags=["outbound"])
-    app.include_router(numbers.router, prefix="/api/numbers", tags=["numbers"])
-    app.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
-    app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
-    app.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
+    # ✅ FIXED - Single /api prefix
+    app.include_router(contacts.router, prefix="/api", tags=["contacts"])
+    app.include_router(calls.router, prefix="/api", tags=["calls"])
+    app.include_router(webrtc.router, prefix="/api", tags=["webrtc"])
+    app.include_router(outbound.router, prefix="/api", tags=["outbound"])
+    app.include_router(numbers.router, prefix="/api", tags=["numbers"])
+    app.include_router(analytics.router, prefix="/api", tags=["analytics"])
+    app.include_router(admin.router, prefix="/api", tags=["admin"])
+    app.include_router(recordings.router, prefix="/api", tags=["recordings"])
+    app.include_router(auth.router, prefix="/api", tags=["auth"])
+    app.include_router(webhooks.router, prefix="", tags=["webhooks"])  # No prefix
     app.include_router(analytics_ws.router, tags=["analytics-ws"])
-    app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-    app.include_router(recordings.router, prefix="/api/recordings", tags=["recordings"])
+    
     logger.info("✅ Core routes loaded successfully")
 except ImportError as e:
     logger.warning(f"⚠️ Some core routes not available: {e}")
 except Exception as e:
     logger.error(f"❌ Error loading core routes: {e}")
-
+    import traceback
+    traceback.print_exc()
 
 # ----------------------------
 # Telnyx Integration
@@ -151,7 +150,6 @@ except Exception as e:
     logger.error(f"❌ Error loading Telnyx integration: {e}")
     import traceback
     traceback.print_exc()
-
 
 # ----------------------------
 # WebSocket Endpoint
@@ -173,7 +171,6 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}")
         await call_manager.disconnect(websocket)
 
-
 # ----------------------------
 # Health & Status Endpoints
 # ----------------------------
@@ -192,7 +189,6 @@ async def health():
         "timestamp": datetime.utcnow().isoformat(),
     }
 
-
 @app.get("/")
 async def root():
     return {
@@ -201,7 +197,6 @@ async def root():
         "docs": "/docs",
         "health": "/health",
     }
-
 
 @app.get("/api/status")
 async def api_status():
@@ -216,10 +211,8 @@ async def api_status():
         },
     }
 
-
 def get_call_manager():
     return call_manager
-
 
 # ----------------------------
 # Run Uvicorn (Render-compatible)

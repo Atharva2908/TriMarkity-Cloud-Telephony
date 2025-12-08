@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 router = APIRouter()
 
-
+# ✅ FIXED: Kept as /summary (becomes /api/analytics/summary)
 @router.get("/summary")
 async def get_analytics_summary():
     """Get overall call analytics summary"""
@@ -32,7 +32,7 @@ async def get_analytics_summary():
         "success_rate": (completed / total_calls * 100) if total_calls > 0 else 0,
     }
 
-
+# ✅ FIXED: Kept as /daily (becomes /api/analytics/daily)
 @router.get("/daily")
 async def get_daily_analytics(days: int = 7):
     """Get daily call analytics for the past N days"""
@@ -69,7 +69,7 @@ async def get_daily_analytics(days: int = 7):
     ]
     return result
 
-
+# ✅ FIXED: Kept as /top-contacts (becomes /api/analytics/top-contacts)
 @router.get("/top-contacts")
 async def get_top_contacts(limit: int = 10):
     """Get top N most called contacts"""
@@ -84,7 +84,7 @@ async def get_top_contacts(limit: int = 10):
     top_contacts = list(calls_collection.aggregate(pipeline))
     return {"top_contacts": top_contacts}
 
-
+# ✅ FIXED: Kept as /call-patterns (becomes /api/analytics/call-patterns)
 @router.get("/call-patterns")
 async def get_call_patterns():
     """Get call patterns by hour of day"""
@@ -103,7 +103,7 @@ async def get_call_patterns():
         "patterns": [{"hour": k, "calls": v} for k, v in sorted(hourly_data.items(), key=lambda x: int(x[0]))]
     }
 
-
+# ✅ FIXED: Kept as /disposition-breakdown (becomes /api/analytics/disposition-breakdown)
 @router.get("/disposition-breakdown")
 async def get_disposition_breakdown():
     """Get breakdown of calls by disposition"""

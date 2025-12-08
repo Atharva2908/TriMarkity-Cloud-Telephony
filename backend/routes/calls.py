@@ -22,6 +22,7 @@ class CallLogUpdate(BaseModel):
     tags: Optional[List[str]] = None
     duration: Optional[int] = None
 
+# ✅ FIXED: Kept as /initiate (becomes /api/calls/initiate)
 @router.post("/initiate")
 async def initiate_call(request: InitiateCallRequest):
     """Initiate an outbound call"""
@@ -45,6 +46,7 @@ async def initiate_call(request: InitiateCallRequest):
         "to_number": request.to_number
     }
 
+# ✅ FIXED: Kept as /logs (becomes /api/calls/logs)
 @router.get("/logs")
 async def get_call_logs():
     """Get all call logs"""
@@ -54,6 +56,29 @@ async def get_call_logs():
         log["_id"] = str(log["_id"])
     return {"logs": logs}
 
+# ✅ IMPORTANT: Moved /logs/search BEFORE /logs/{call_id} to prevent route conflicts
+@router.get("/logs/search")
+async def search_call_logs(query: str = "", status: str = None):
+    """Search call logs by phone number or status"""
+    calls_collection = db.get_db()["call_logs"]
+    filter_query = {}
+    
+    if query:
+        filter_query["$or"] = [
+            {"to_number": {"$regex": query, "$options": "i"}},
+            {"from_number": {"$regex": query, "$options": "i"}},
+            {"notes": {"$regex": query, "$options": "i"}}
+        ]
+    
+    if status:
+        filter_query["status"] = status
+    
+    logs = list(calls_collection.find(filter_query).sort("created_at", -1).limit(50))
+    for log in logs:
+        log["_id"] = str(log["_id"])
+    return {"logs": logs}
+
+# ✅ FIXED: Kept as /logs/{call_id} (becomes /api/calls/logs/{call_id})
 @router.get("/logs/{call_id}")
 async def get_call_log(call_id: str):
     """Get a specific call log"""
@@ -64,6 +89,7 @@ async def get_call_log(call_id: str):
     log["_id"] = str(log["_id"])
     return log
 
+# ✅ FIXED: Kept as /{call_id}/status (becomes /api/calls/{call_id}/status)
 @router.post("/{call_id}/status")
 async def update_call_status(call_id: str, update: CallStatusUpdate):
     """Update call status"""
@@ -76,6 +102,7 @@ async def update_call_status(call_id: str, update: CallStatusUpdate):
         raise HTTPException(status_code=404, detail="Call not found")
     return {"message": "Call status updated"}
 
+# ✅ FIXED: Kept as /{call_id}/log (becomes /api/calls/{call_id}/log)
 @router.put("/{call_id}/log")
 async def update_call_log(call_id: str, update: CallLogUpdate):
     """Update call log with disposition, notes, and tags"""
@@ -101,6 +128,7 @@ async def update_call_log(call_id: str, update: CallLogUpdate):
     
     return {"message": "Call log updated"}
 
+# ✅ FIXED: Kept as /{call_id}/hang-up (becomes /api/calls/{call_id}/hang-up)
 @router.post("/{call_id}/hang-up")
 async def hang_up_call(call_id: str):
     """End a call"""
@@ -113,27 +141,7 @@ async def hang_up_call(call_id: str):
         raise HTTPException(status_code=404, detail="Call not found")
     return {"message": "Call ended"}
 
-@router.get("/logs/search")
-async def search_call_logs(query: str = "", status: str = None):
-    """Search call logs by phone number or status"""
-    calls_collection = db.get_db()["call_logs"]
-    filter_query = {}
-    
-    if query:
-        filter_query["$or"] = [
-            {"to_number": {"$regex": query, "$options": "i"}},
-            {"from_number": {"$regex": query, "$options": "i"}},
-            {"notes": {"$regex": query, "$options": "i"}}
-        ]
-    
-    if status:
-        filter_query["status"] = status
-    
-    logs = list(calls_collection.find(filter_query).sort("created_at", -1).limit(50))
-    for log in logs:
-        log["_id"] = str(log["_id"])
-    return {"logs": logs}
-
+# ✅ FIXED: Kept as /{call_id}/mute (becomes /api/calls/{call_id}/mute)
 @router.post("/{call_id}/mute")
 async def mute_call(call_id: str, mute: dict):
     """Mute/unmute a call"""
@@ -146,6 +154,7 @@ async def mute_call(call_id: str, mute: dict):
         raise HTTPException(status_code=404, detail="Call not found")
     return {"message": "Call muted" if mute.get("mute") else "Call unmuted"}
 
+# ✅ FIXED: Kept as /{call_id}/hold (becomes /api/calls/{call_id}/hold)
 @router.post("/{call_id}/hold")
 async def hold_call(call_id: str, hold: dict):
     """Put a call on hold"""
@@ -158,6 +167,7 @@ async def hold_call(call_id: str, hold: dict):
         raise HTTPException(status_code=404, detail="Call not found")
     return {"message": "Call on hold" if hold.get("hold") else "Call resumed"}
 
+# ✅ FIXED: Kept as /{call_id}/dtmf (becomes /api/calls/{call_id}/dtmf)
 @router.post("/{call_id}/dtmf")
 async def send_dtmf(call_id: str, dtmf: dict):
     """Send DTMF tone during call"""
@@ -170,6 +180,7 @@ async def send_dtmf(call_id: str, dtmf: dict):
         raise HTTPException(status_code=404, detail="Call not found")
     return {"message": "DTMF sent"}
 
+# ✅ FIXED: Kept as /stats/summary (becomes /api/calls/stats/summary)
 @router.get("/stats/summary")
 async def get_call_stats():
     """Get call statistics"""

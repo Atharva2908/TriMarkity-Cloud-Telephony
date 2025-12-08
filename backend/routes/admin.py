@@ -10,6 +10,7 @@ class ConfigUpdateRequest(BaseModel):
     api_v2_key: str
     webhook_url: str
 
+# ✅ FIXED: Kept as /config (becomes /api/admin/config)
 @router.get("/config")
 async def get_config():
     """Get Telnyx configuration"""
@@ -20,6 +21,7 @@ async def get_config():
     config.pop("_id", None)
     return config
 
+# ✅ FIXED: Kept as /config (becomes /api/admin/config)
 @router.put("/config")
 async def update_config(config_update: ConfigUpdateRequest):
     """Update Telnyx configuration"""
@@ -31,6 +33,7 @@ async def update_config(config_update: ConfigUpdateRequest):
     )
     return {"message": "Configuration updated"}
 
+# ✅ FIXED: Kept as /numbers (becomes /api/admin/numbers)
 @router.get("/numbers")
 async def get_call_numbers():
     """Get all configured call numbers"""
@@ -38,6 +41,7 @@ async def get_call_numbers():
     numbers = list(numbers_collection.find({}, {"_id": 0}))
     return {"numbers": numbers}
 
+# ✅ FIXED: Kept as /numbers (becomes /api/admin/numbers)
 @router.post("/numbers")
 async def add_call_number(number: CallNumber):
     """Add a new call number"""
@@ -45,6 +49,7 @@ async def add_call_number(number: CallNumber):
     result = numbers_collection.insert_one(number.dict())
     return {"id": str(result.inserted_id), "message": "Number added"}
 
+# ✅ FIXED: Kept as /numbers/{number} (becomes /api/admin/numbers/{number})
 @router.delete("/numbers/{number}")
 async def delete_call_number(number: str):
     """Delete a call number"""

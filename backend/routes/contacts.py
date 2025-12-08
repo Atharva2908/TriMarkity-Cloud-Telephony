@@ -7,8 +7,8 @@ from datetime import datetime
 
 router = APIRouter()
 
-# ✅ FIXED - Changed "/" to "/contacts/"
-@router.get("/contacts/")
+# ✅ FIXED - Changed back to "/"
+@router.get("/")
 async def get_contacts(category: str = None):
     """Get all contacts, optionally filtered by category"""
     contacts_collection = db.get_db()["contacts"]
@@ -20,8 +20,8 @@ async def get_contacts(category: str = None):
         contact["_id"] = str(contact["_id"])
     return {"contacts": contacts}
 
-# ✅ FIXED - Changed "/favorites" to "/contacts/favorites"
-@router.get("/contacts/favorites")
+# ✅ FIXED - Changed back to "/favorites"
+@router.get("/favorites")
 async def get_favorite_contacts():
     """Get all favorite contacts"""
     contacts_collection = db.get_db()["contacts"]
@@ -30,16 +30,16 @@ async def get_favorite_contacts():
         contact["_id"] = str(contact["_id"])
     return {"contacts": favorites}
 
-# ✅ FIXED - Changed "/" to "/contacts/"
-@router.post("/contacts/")
+# ✅ FIXED - Changed back to "/"
+@router.post("/")
 async def create_contact(contact: Contact):
     """Create a new contact"""
     contacts_collection = db.get_db()["contacts"]
     result = contacts_collection.insert_one(contact.dict())
     return {"id": str(result.inserted_id), "message": "Contact created"}
 
-# ✅ FIXED - Changed "/{contact_id}" to "/contacts/{contact_id}"
-@router.get("/contacts/{contact_id}")
+# ✅ FIXED - Changed back to "/{contact_id}"
+@router.get("/{contact_id}")
 async def get_contact(contact_id: str):
     """Get a specific contact"""
     contacts_collection = db.get_db()["contacts"]
@@ -49,8 +49,8 @@ async def get_contact(contact_id: str):
     contact["_id"] = str(contact["_id"])
     return contact
 
-# ✅ FIXED - Changed "/{contact_id}" to "/contacts/{contact_id}"
-@router.put("/contacts/{contact_id}")
+# ✅ FIXED - Changed back to "/{contact_id}"
+@router.put("/{contact_id}")
 async def update_contact(contact_id: str, contact: Contact):
     """Update a contact"""
     contacts_collection = db.get_db()["contacts"]
@@ -64,8 +64,8 @@ async def update_contact(contact_id: str, contact: Contact):
         raise HTTPException(status_code=404, detail="Contact not found")
     return {"message": "Contact updated"}
 
-# ✅ FIXED - Changed "/{contact_id}/favorite" to "/contacts/{contact_id}/favorite"
-@router.post("/contacts/{contact_id}/favorite")
+# ✅ FIXED - Changed back to "/{contact_id}/favorite"
+@router.post("/{contact_id}/favorite")
 async def toggle_favorite(contact_id: str):
     """Toggle favorite status for a contact"""
     contacts_collection = db.get_db()["contacts"]
@@ -80,8 +80,8 @@ async def toggle_favorite(contact_id: str):
     )
     return {"is_favorite": new_favorite_status}
 
-# ✅ FIXED - Changed "/{contact_id}" to "/contacts/{contact_id}"
-@router.delete("/contacts/{contact_id}")
+# ✅ FIXED - Changed back to "/{contact_id}"
+@router.delete("/{contact_id}")
 async def delete_contact(contact_id: str):
     """Delete a contact"""
     contacts_collection = db.get_db()["contacts"]

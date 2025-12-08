@@ -95,7 +95,7 @@ app.add_middleware(
 )
 
 # ----------------------------
-# Core Routes - FIXED PREFIXES
+# Core Routes - FIXED PREFIXES ✅
 # ----------------------------
 try:
     from routes import (
@@ -111,16 +111,16 @@ try:
         recordings,
     )
 
-    # ✅ FIXED - Single /api prefix
-    app.include_router(contacts.router, prefix="/api", tags=["contacts"])
-    app.include_router(calls.router, prefix="/api", tags=["calls"])
-    app.include_router(webrtc.router, prefix="/api", tags=["webrtc"])
-    app.include_router(outbound.router, prefix="/api", tags=["outbound"])
-    app.include_router(numbers.router, prefix="/api", tags=["numbers"])
-    app.include_router(analytics.router, prefix="/api", tags=["analytics"])
-    app.include_router(admin.router, prefix="/api", tags=["admin"])
-    app.include_router(recordings.router, prefix="/api", tags=["recordings"])
-    app.include_router(auth.router, prefix="/api", tags=["auth"])
+    # ✅ FIXED - Proper prefixes for each router
+    app.include_router(contacts.router, prefix="/api/contacts", tags=["contacts"])
+    app.include_router(calls.router, prefix="/api/calls", tags=["calls"])
+    app.include_router(webrtc.router, prefix="/api/webrtc", tags=["webrtc"])
+    app.include_router(outbound.router, prefix="/api/outbound", tags=["outbound"])
+    app.include_router(numbers.router, prefix="/api/numbers", tags=["numbers"])
+    app.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
+    app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
+    app.include_router(recordings.router, prefix="/api/recordings", tags=["recordings"])
+    app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     app.include_router(webhooks.router, prefix="", tags=["webhooks"])  # No prefix
     app.include_router(analytics_ws.router, tags=["analytics-ws"])
     

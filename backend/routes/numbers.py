@@ -7,8 +7,8 @@ from datetime import datetime
 
 router = APIRouter()
 
-
-@router.get("/")
+# ✅ FIXED - Changed "/" to "/numbers/"
+@router.get("/numbers/")
 async def get_numbers():
     """Get all virtual numbers"""
     numbers_collection = db.get_db()["call_numbers"]
@@ -17,8 +17,8 @@ async def get_numbers():
         d["_id"] = str(d["_id"])
     return {"numbers": docs}
 
-
-@router.post("/")
+# ✅ FIXED - Changed "/" to "/numbers/"
+@router.post("/numbers/")
 async def create_number(number: CallNumber):
     """Purchase/add a new virtual number"""
     numbers_collection = db.get_db()["call_numbers"]
@@ -31,8 +31,8 @@ async def create_number(number: CallNumber):
     result = numbers_collection.insert_one(number.dict())
     return {"id": str(result.inserted_id), "message": "Number added successfully"}
 
-
-@router.get("/search")
+# ✅ FIXED - Changed "/search" to "/numbers/search"
+@router.get("/numbers/search")
 async def search_available_numbers(country_code: str = "US", area_code: str = ""):
     """Search for available numbers (mock implementation)"""
     # In production, this would call Telnyx API to search available numbers
@@ -42,8 +42,8 @@ async def search_available_numbers(country_code: str = "US", area_code: str = ""
     ]
     return {"available_numbers": available_numbers}
 
-
-@router.put("/{number_id}")
+# ✅ FIXED - Changed "/{number_id}" to "/numbers/{number_id}"
+@router.put("/numbers/{number_id}")
 async def update_number(number_id: str, number: CallNumber):
     """Update a number (e.g., change name/status)"""
     numbers_collection = db.get_db()["call_numbers"]
@@ -55,8 +55,8 @@ async def update_number(number_id: str, number: CallNumber):
         raise HTTPException(status_code=404, detail="Number not found")
     return {"message": "Number updated"}
 
-
-@router.delete("/{number_id}")
+# ✅ FIXED - Changed "/{number_id}" to "/numbers/{number_id}"
+@router.delete("/numbers/{number_id}")
 async def delete_number(number_id: str):
     """Delete/remove a virtual number"""
     numbers_collection = db.get_db()["call_numbers"]
@@ -65,8 +65,8 @@ async def delete_number(number_id: str):
         raise HTTPException(status_code=404, detail="Number not found")
     return {"message": "Number deleted"}
 
-
-@router.post("/{number_id}/set-default")
+# ✅ FIXED - Changed "/{number_id}/set-default" to "/numbers/{number_id}/set-default"
+@router.post("/numbers/{number_id}/set-default")
 async def set_default_number(number_id: str):
     """Set a number as default outbound caller ID"""
     numbers_collection = db.get_db()["call_numbers"]
@@ -83,8 +83,8 @@ async def set_default_number(number_id: str):
         raise HTTPException(status_code=404, detail="Number not found")
     return {"message": "Default number set"}
 
-
-@router.get("/default")
+# ✅ FIXED - Changed "/default" to "/numbers/default"
+@router.get("/numbers/default")
 async def get_default_number():
     """Get the default outbound caller ID"""
     numbers_collection = db.get_db()["call_numbers"]

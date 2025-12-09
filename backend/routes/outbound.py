@@ -5,8 +5,16 @@ from database import db
 from datetime import datetime, timedelta
 import uuid
 import asyncio
+import telnyx
+import os
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
+TELNYX_CONNECTION_ID = os.getenv("TELNYX_CONNECTION_ID")
+telnyx.api_key = TELNYX_API_KEY
 
 class OutboundCallRequest(BaseModel):
     to_number: str
@@ -20,6 +28,16 @@ class CallRecordingRequest(BaseModel):
     url: str
     size: int
 
+class DTMFRequest(BaseModel):
+    call_control_id: str
+    digits: str
+
+class SpeakRequest(BaseModel):
+    call_control_id: str
+    text: str
+    voice: str = "female"
+    language: str = "en-US"
+
 # Track active calls for reconnect and hangup logic
 active_calls = {}
 
@@ -28,12 +46,43 @@ async def initiate_outbound_call(request: OutboundCallRequest):
     """Initiate an outbound call with optional TTS, auto-reconnect, and auto-hangup"""
     call_id = str(uuid.uuid4())
     
+    try:
+        # Create Telnyx call
+        call = telnyx.Call.create(
+            connection_id=TELNYX_CONNECTION_ID,
+            to=request.to_number,
+            from_=request.from_number,
+            webhook_url=f"{os.getenv('WEBHOOK_URL', 'https://your-domain.com')}/api/webhooks/call",
+            webhook_url_method="POST",
+        )
+        
+        telnyx_call_control_id = call.call_control_id
+        telnyx_session_id = call.call_session_id
+        
+        logger.info(f"📞 Outbound call initiated: {call_id} -> {request.to_number}")
+        
+        # Speak TTS message if provided
+        if request.tts_message:
+            call.speak(
+                payload=request.tts_message,
+                voice="female",
+                language="en-US"
+            )
+            logger.info(f"🔊 TTS message sent: {request.tts_message}")
+        
+    except Exception as e:
+        logger.error(f"❌ Telnyx call creation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create call: {str(e)}")
+    
+    # Store in MongoDB
     call_log = CallLog(
         call_id=call_id,
         from_number=request.from_number,
         to_number=request.to_number,
         status=CallStatus.DIALING,
-        started_at=datetime.utcnow()
+        started_at=datetime.utcnow(),
+        telnyx_call_control_id=telnyx_call_control_id,
+        telnyx_session_id=telnyx_session_id
     )
     
     calls_collection = db.get_db()["call_logs"]
@@ -49,6 +98,7 @@ async def initiate_outbound_call(request: OutboundCallRequest):
         "created_at": datetime.utcnow(),
         "reconnect_attempts": 0,
         "max_reconnect_attempts": 3,
+        "call_control_id": telnyx_call_control_id,
     }
     
     # Schedule auto-hangup
@@ -57,11 +107,70 @@ async def initiate_outbound_call(request: OutboundCallRequest):
     
     return {
         "call_id": call_id,
+        "call_control_id": telnyx_call_control_id,
+        "call_session_id": telnyx_session_id,
         "status": "initiating",
-        "from_number": request.from_number,
-        "to_number": request.to_number,
+        "from": request.from_number,
+        "to": request.to_number,
         "message": f"Outbound call initiated. TTS: {request.tts_message or 'None'}"
     }
+
+@router.post("/send-dtmf")
+async def send_dtmf(request: DTMFRequest):
+    """
+    Send DTMF tones during active call
+    Used to navigate IVR menus (Press 1, 2, 3, etc.)
+    """
+    try:
+        logger.info(f"🔢 Sending DTMF: {request.digits} to call {request.call_control_id}")
+        
+        # Retrieve and send DTMF via Telnyx
+        call = telnyx.Call.retrieve(request.call_control_id)
+        call.send_dtmf(digits=request.digits)
+        
+        logger.info(f"✅ DTMF sent successfully")
+        
+        return {
+            "status": "success",
+            "call_control_id": request.call_control_id,
+            "digits": request.digits,
+            "message": f"DTMF tones '{request.digits}' sent successfully"
+        }
+        
+    except telnyx.error.TelnyxError as e:
+        logger.error(f"❌ Telnyx DTMF error: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Telnyx error: {str(e)}")
+    except Exception as e:
+        logger.error(f"❌ DTMF error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/speak")
+async def speak_on_call(request: SpeakRequest):
+    """
+    Speak text on active call using Text-to-Speech
+    """
+    try:
+        logger.info(f"🔊 Speaking on call {request.call_control_id}: {request.text}")
+        
+        call = telnyx.Call.retrieve(request.call_control_id)
+        call.speak(
+            payload=request.text,
+            voice=request.voice,
+            language=request.language
+        )
+        
+        logger.info(f"✅ TTS sent successfully")
+        
+        return {
+            "status": "success",
+            "call_control_id": request.call_control_id,
+            "text": request.text,
+            "message": "TTS message sent successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ TTS error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/{call_id}/hangup")
 async def hangup_outbound_call(call_id: str):
@@ -71,6 +180,15 @@ async def hangup_outbound_call(call_id: str):
     
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
+    
+    # Hangup via Telnyx if call_control_id exists
+    try:
+        if call.get("telnyx_call_control_id"):
+            telnyx_call = telnyx.Call.retrieve(call["telnyx_call_control_id"])
+            telnyx_call.hangup()
+            logger.info(f"📴 Telnyx call hung up: {call_id}")
+    except Exception as e:
+        logger.warning(f"⚠️ Telnyx hangup failed: {str(e)}")
     
     duration = 0
     if call.get("started_at"):
@@ -106,14 +224,31 @@ async def start_recording(call_id: str):
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
     
-    # TODO: Integrate with Telnyx Recording API
-    # recording_id = telnyx_client.start_recording(call_id)
+    try:
+        if call.get("telnyx_call_control_id"):
+            telnyx_call = telnyx.Call.retrieve(call["telnyx_call_control_id"])
+            telnyx_call.record_start(
+                format="mp3",
+                channels="single"
+            )
+            
+            calls_collection.update_one(
+                {"call_id": call_id},
+                {"$set": {"is_recording": True, "recording_started_at": datetime.utcnow()}}
+            )
+            
+            logger.info(f"🔴 Recording started for call: {call_id}")
+            
+            return {
+                "call_id": call_id,
+                "recording_started": True,
+                "message": "Recording started successfully"
+            }
+    except Exception as e:
+        logger.error(f"❌ Recording start error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
     
-    return {
-        "call_id": call_id,
-        "recording_started": True,
-        "message": "Recording started - integrate with Telnyx API"
-    }
+    raise HTTPException(status_code=400, detail="Call control ID not found")
 
 @router.post("/{call_id}/recording/stop")
 async def stop_recording(call_id: str):
@@ -124,14 +259,28 @@ async def stop_recording(call_id: str):
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
     
-    # TODO: Integrate with Telnyx Recording API
-    # recording = telnyx_client.stop_recording(call_id)
+    try:
+        if call.get("telnyx_call_control_id"):
+            telnyx_call = telnyx.Call.retrieve(call["telnyx_call_control_id"])
+            telnyx_call.record_stop()
+            
+            calls_collection.update_one(
+                {"call_id": call_id},
+                {"$set": {"is_recording": False}}
+            )
+            
+            logger.info(f"⏹️ Recording stopped for call: {call_id}")
+            
+            return {
+                "call_id": call_id,
+                "recording_stopped": True,
+                "message": "Recording stopped successfully"
+            }
+    except Exception as e:
+        logger.error(f"❌ Recording stop error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
     
-    return {
-        "call_id": call_id,
-        "recording_stopped": True,
-        "message": "Recording stopped - integrate with Telnyx API"
-    }
+    raise HTTPException(status_code=400, detail="Call control ID not found")
 
 @router.get("/recordings/list")
 async def list_recordings():
@@ -179,6 +328,15 @@ async def _auto_hangup(call_id: str, duration: int):
     call = calls_collection.find_one({"call_id": call_id})
     
     if call and call.get("status") != CallStatus.ENDED:
+        # Hangup via Telnyx
+        try:
+            if call.get("telnyx_call_control_id"):
+                telnyx_call = telnyx.Call.retrieve(call["telnyx_call_control_id"])
+                telnyx_call.hangup()
+                logger.info(f"⏰ Auto-hangup executed for call: {call_id}")
+        except Exception as e:
+            logger.error(f"❌ Auto-hangup failed: {str(e)}")
+        
         calls_collection.update_one(
             {"call_id": call_id},
             {
@@ -188,6 +346,10 @@ async def _auto_hangup(call_id: str, duration: int):
                 }
             }
         )
+        
+        # Clean up
+        if call_id in active_calls:
+            del active_calls[call_id]
 
 async def _handle_reconnect(call_id: str):
     """Handle automatic reconnection on call failure"""
@@ -210,5 +372,45 @@ async def _handle_reconnect(call_id: str):
             }
         )
         
+        logger.info(f"🔄 Reconnecting call {call_id} (attempt {call_info['reconnect_attempts']})")
+        
         # Wait before retrying
         await asyncio.sleep(5)
+        
+        # Re-initiate call
+        try:
+            call = telnyx.Call.create(
+                connection_id=TELNYX_CONNECTION_ID,
+                to=call_info["to_number"],
+                from_=call_info["from_number"],
+                webhook_url=f"{os.getenv('WEBHOOK_URL', 'https://your-domain.com')}/api/webhooks/call",
+                webhook_url_method="POST",
+            )
+            
+            # Update with new call control ID
+            call_info["call_control_id"] = call.call_control_id
+            
+            calls_collection.update_one(
+                {"call_id": call_id},
+                {
+                    "$set": {
+                        "telnyx_call_control_id": call.call_control_id,
+                        "telnyx_session_id": call.call_session_id
+                    }
+                }
+            )
+            
+            logger.info(f"✅ Reconnection successful for call: {call_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Reconnection failed: {str(e)}")
+
+@router.get("/health")
+async def outbound_health():
+    """Health check for outbound calls"""
+    return {
+        "status": "healthy",
+        "service": "outbound_calls",
+        "active_calls": len(active_calls),
+        "timestamp": datetime.utcnow().isoformat()
+    }

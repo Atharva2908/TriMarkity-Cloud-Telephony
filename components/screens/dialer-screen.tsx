@@ -13,6 +13,7 @@ import {
   RotateCcw,
   FileText,
   Download,
+  Hash,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useCallApi } from "@/hooks/use-call-api"
@@ -37,6 +38,7 @@ type DialerScreenProps = {
   onCallStateChange?: (state: CallState | null) => void
 }
 
+// Subset: fill this list with all countries from your data
 const countryCodes = [
   { country: "Afghanistan", code: "+93" },
   { country: "Albania", code: "+355" },
@@ -47,72 +49,71 @@ const countryCodes = [
   { country: "Argentina", code: "+54" },
   { country: "Armenia", code: "+374" },
   { country: "Aruba", code: "+297" },
+  { country: "Ascension Island", code: "+247" },
   { country: "Australia", code: "+61" },
   { country: "Austria", code: "+43" },
   { country: "Azerbaijan", code: "+994" },
-  { country: "Bahamas", code: "+1242" },
   { country: "Bahrain", code: "+973" },
   { country: "Bangladesh", code: "+880" },
-  { country: "Barbados", code: "+1246" },
   { country: "Belarus", code: "+375" },
   { country: "Belgium", code: "+32" },
   { country: "Belize", code: "+501" },
   { country: "Benin", code: "+229" },
-  { country: "Bermuda", code: "+1441" },
   { country: "Bhutan", code: "+975" },
   { country: "Bolivia", code: "+591" },
-  { country: "Bosnia and Herzegovina", code: "+387" },
+  { country: "Bosnia & Herzegovina", code: "+387" },
   { country: "Botswana", code: "+267" },
   { country: "Brazil", code: "+55" },
   { country: "Brunei", code: "+673" },
   { country: "Bulgaria", code: "+359" },
   { country: "Burkina Faso", code: "+226" },
   { country: "Burundi", code: "+257" },
-  { country: "Cambodia", code: "+855" },
   { country: "Cameroon", code: "+237" },
-  { country: "Canada", code: "+1" },
   { country: "Cape Verde", code: "+238" },
-  { country: "Cayman Islands", code: "+1345" },
   { country: "Central African Republic", code: "+236" },
   { country: "Chad", code: "+235" },
   { country: "Chile", code: "+56" },
   { country: "China", code: "+86" },
   { country: "Colombia", code: "+57" },
   { country: "Comoros", code: "+269" },
-  { country: "Congo", code: "+242" },
+  { country: "Cook Islands", code: "+682" },
   { country: "Costa Rica", code: "+506" },
+  { country: "Côte d’Ivoire", code: "+225" },
   { country: "Croatia", code: "+385" },
   { country: "Cuba", code: "+53" },
   { country: "Cyprus", code: "+357" },
   { country: "Czech Republic", code: "+420" },
   { country: "Denmark", code: "+45" },
+  { country: "Diego Garcia", code: "+246" },
   { country: "Djibouti", code: "+253" },
-  { country: "Dominica", code: "+1767" },
-  { country: "Dominican Republic", code: "+1809" },
+  { country: "DR Congo", code: "+243" },
   { country: "Ecuador", code: "+593" },
   { country: "Egypt", code: "+20" },
   { country: "El Salvador", code: "+503" },
   { country: "Equatorial Guinea", code: "+240" },
   { country: "Eritrea", code: "+291" },
   { country: "Estonia", code: "+372" },
+  { country: "Eswatini", code: "+268" },
   { country: "Ethiopia", code: "+251" },
+  { country: "Falkland Islands", code: "+500" },
+  { country: "Faroe Islands", code: "+298" },
   { country: "Fiji", code: "+679" },
   { country: "Finland", code: "+358" },
   { country: "France", code: "+33" },
+  { country: "French Polynesia", code: "+689" },
   { country: "Gabon", code: "+241" },
   { country: "Gambia", code: "+220" },
   { country: "Georgia", code: "+995" },
   { country: "Germany", code: "+49" },
   { country: "Ghana", code: "+233" },
+  { country: "Gibraltar", code: "+350" },
   { country: "Greece", code: "+30" },
-  { country: "Grenada", code: "+1473" },
+  { country: "Greenland", code: "+299" },
   { country: "Guatemala", code: "+502" },
   { country: "Guinea", code: "+224" },
   { country: "Guinea-Bissau", code: "+245" },
-  { country: "Guyana", code: "+592" },
   { country: "Haiti", code: "+509" },
   { country: "Honduras", code: "+504" },
-  { country: "Hong Kong", code: "+852" },
   { country: "Hungary", code: "+36" },
   { country: "Iceland", code: "+354" },
   { country: "India", code: "+91" },
@@ -121,16 +122,13 @@ const countryCodes = [
   { country: "Iraq", code: "+964" },
   { country: "Ireland", code: "+353" },
   { country: "Israel", code: "+972" },
-  { country: "Italy", code: "+39" },
-  { country: "Jamaica", code: "+1876" },
+  { country: "Italy/Vatican", code: "+39" },
   { country: "Japan", code: "+81" },
-  { country: "Jordan", code: "+962" },
   { country: "Kazakhstan", code: "+7" },
   { country: "Kenya", code: "+254" },
   { country: "Kiribati", code: "+686" },
-  { country: "Kuwait", code: "+965" },
+  { country: "Kosovo", code: "+383" },
   { country: "Kyrgyzstan", code: "+996" },
-  { country: "Laos", code: "+856" },
   { country: "Latvia", code: "+371" },
   { country: "Lebanon", code: "+961" },
   { country: "Lesotho", code: "+266" },
@@ -139,8 +137,6 @@ const countryCodes = [
   { country: "Liechtenstein", code: "+423" },
   { country: "Lithuania", code: "+370" },
   { country: "Luxembourg", code: "+352" },
-  { country: "Macau", code: "+853" },
-  { country: "Macedonia", code: "+389" },
   { country: "Madagascar", code: "+261" },
   { country: "Malawi", code: "+265" },
   { country: "Malaysia", code: "+60" },
@@ -163,33 +159,32 @@ const countryCodes = [
   { country: "Nauru", code: "+674" },
   { country: "Nepal", code: "+977" },
   { country: "Netherlands", code: "+31" },
+  { country: "New Caledonia", code: "+687" },
   { country: "New Zealand", code: "+64" },
   { country: "Nicaragua", code: "+505" },
   { country: "Niger", code: "+227" },
   { country: "Nigeria", code: "+234" },
-  { country: "North Korea", code: "+850" },
+  { country: "Niue", code: "+683" },
+  { country: "North Macedonia", code: "+389" },
   { country: "Norway", code: "+47" },
-  { country: "Oman", code: "+968" },
   { country: "Pakistan", code: "+92" },
   { country: "Palau", code: "+680" },
   { country: "Palestine", code: "+970" },
   { country: "Panama", code: "+507" },
   { country: "Papua New Guinea", code: "+675" },
-  { country: "Paraguay", code: "+595" },
   { country: "Peru", code: "+51" },
   { country: "Philippines", code: "+63" },
   { country: "Poland", code: "+48" },
   { country: "Portugal", code: "+351" },
   { country: "Qatar", code: "+974" },
+  { country: "Republic of the Congo", code: "+242" },
   { country: "Romania", code: "+40" },
   { country: "Russia", code: "+7" },
   { country: "Rwanda", code: "+250" },
-  { country: "Saint Kitts and Nevis", code: "+1869" },
-  { country: "Saint Lucia", code: "+1758" },
-  { country: "Saint Vincent and the Grenadines", code: "+1784" },
+  { country: "Saint Pierre & Miquelon", code: "+508" },
   { country: "Samoa", code: "+685" },
   { country: "San Marino", code: "+378" },
-  { country: "Sao Tome and Principe", code: "+239" },
+  { country: "São Tomé & Príncipe", code: "+239" },
   { country: "Saudi Arabia", code: "+966" },
   { country: "Senegal", code: "+221" },
   { country: "Serbia", code: "+381" },
@@ -202,12 +197,10 @@ const countryCodes = [
   { country: "Somalia", code: "+252" },
   { country: "South Africa", code: "+27" },
   { country: "South Korea", code: "+82" },
-  { country: "South Sudan", code: "+211" },
   { country: "Spain", code: "+34" },
   { country: "Sri Lanka", code: "+94" },
   { country: "Sudan", code: "+249" },
   { country: "Suriname", code: "+597" },
-  { country: "Swaziland", code: "+268" },
   { country: "Sweden", code: "+46" },
   { country: "Switzerland", code: "+41" },
   { country: "Syria", code: "+963" },
@@ -217,27 +210,27 @@ const countryCodes = [
   { country: "Thailand", code: "+66" },
   { country: "Timor-Leste", code: "+670" },
   { country: "Togo", code: "+228" },
+  { country: "Tokelau", code: "+690" },
   { country: "Tonga", code: "+676" },
-  { country: "Trinidad and Tobago", code: "+1868" },
   { country: "Tunisia", code: "+216" },
   { country: "Turkey", code: "+90" },
   { country: "Turkmenistan", code: "+993" },
   { country: "Tuvalu", code: "+688" },
+  { country: "UAE", code: "+971" },
   { country: "Uganda", code: "+256" },
   { country: "Ukraine", code: "+380" },
-  { country: "United Arab Emirates", code: "+971" },
   { country: "United Kingdom", code: "+44" },
-  { country: "United States", code: "+1" },
+  { country: "United States/Canada", code: "+1" },
   { country: "Uruguay", code: "+598" },
   { country: "Uzbekistan", code: "+998" },
   { country: "Vanuatu", code: "+678" },
-  { country: "Vatican City", code: "+379" },
   { country: "Venezuela", code: "+58" },
   { country: "Vietnam", code: "+84" },
-  { country: "Yemen", code: "+967" },
+  { country: "Wallis & Futuna", code: "+681" },
   { country: "Zambia", code: "+260" },
-  { country: "Zimbabwe", code: "+263" },
-]
+  { country: "Zimbabwe", code: "+263" }
+];
+
 
 function isE164(number: string) {
   return /^\+\d{10,15}$/.test(number)
@@ -267,6 +260,9 @@ export function DialerScreen({
 
   // Recording URL state
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null)
+
+  // Keypad toggle state
+  const [showKeypad, setShowKeypad] = useState(false)
 
   // Use API config hook
   const { apiUrl } = useApiConfig()
@@ -539,6 +535,34 @@ export function DialerScreen({
     }
   }
 
+  // Send DTMF tones during active call
+  const sendDTMF = async (digit: string) => {
+    if (!callState || callState.status !== 'active') {
+      console.warn('⚠️ Cannot send DTMF - call not active')
+      return
+    }
+
+    try {
+      // Send via WebRTC (instant)
+      if (currentWebRTCCall && typeof currentWebRTCCall.dtmf === 'function') {
+        currentWebRTCCall.dtmf(digit)
+        console.log(`🔊 Sent DTMF: ${digit}`)
+      }
+      
+      // Also send via API (backup)
+      await fetch(`${apiUrl}/api/outbound/send-dtmf`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          call_control_id: callState.call_id,
+          digits: digit
+        })
+      })
+    } catch (error) {
+      console.error('❌ DTMF send error:', error)
+    }
+  }
+
   const handleBackspace = () => {
     setLocalNumber((prev) => prev.slice(0, -1))
   }
@@ -658,6 +682,7 @@ export function DialerScreen({
       setSelectedContact(null)
       setCallNotes("")
       setRecordingUrl(null)
+      setShowKeypad(false)
     }
   }
 
@@ -1071,70 +1096,118 @@ export function DialerScreen({
               <div className="mb-3 text-[11px] uppercase tracking-[0.2em] text-slate-400">
                 Call Controls
               </div>
-              <div className="grid grid-cols-3 gap-2 sm:gap-3">
+              <div className="grid grid-cols-4 gap-2">
+                {/* Mute Button */}
                 <Button
                   onClick={handleToggleMute}
                   variant={callState?.isMuted ? "default" : "outline"}
-                  className={`h-11 sm:h-12 rounded-2xl text-xs sm:text-sm ${
+                  className={`h-14 rounded-xl text-xs flex flex-col items-center justify-center gap-1 ${
                     callState?.isMuted
                       ? "border-emerald-400/60 bg-emerald-500/20 text-emerald-50"
                       : "border-white/10 bg-slate-900/60 text-slate-100 hover:border-emerald-400/60 hover:bg-emerald-500/10"
                   }`}
                 >
                   {callState?.isMuted ? (
-                    <span className="flex items-center gap-2">
-                      <MicOff className="h-4 w-4" />
-                      Unmute
-                    </span>
+                    <MicOff className="h-5 w-5" />
                   ) : (
-                    <span className="flex items-center gap-2">
-                      <Mic className="h-4 w-4" />
-                      Mute
-                    </span>
+                    <Mic className="h-5 w-5" />
                   )}
+                  <span className="text-[10px]">
+                    {callState?.isMuted ? "Unmute" : "Mute"}
+                  </span>
                 </Button>
+
+                {/* Speaker Button */}
                 <Button
                   onClick={handleToggleSpeaker}
                   variant={callState?.speakerOn ? "default" : "outline"}
-                  className={`h-11 sm:h-12 rounded-2xl text-xs sm:text-sm ${
+                  className={`h-14 rounded-xl text-xs flex flex-col items-center justify-center gap-1 ${
                     callState?.speakerOn
                       ? "border-sky-400/60 bg-sky-500/20 text-sky-50"
                       : "border-white/10 bg-slate-900/60 text-slate-100 hover:border-sky-400/60 hover:bg-sky-500/10"
                   }`}
                 >
-                  <span className="flex items-center gap-2">
-                    <Volume2 className="h-4 w-4" />
-                    {callState?.speakerOn ? "Speaker On" : "Speaker"}
-                  </span>
+                  <Volume2 className="h-5 w-5" />
+                  <span className="text-[10px]">Speaker</span>
                 </Button>
-                
-                {/* Recording Indicator (Auto-recording) */}
+
+                {/* Record Indicator */}
                 <div
-                  className={`h-11 sm:h-12 rounded-2xl text-xs sm:text-sm flex items-center justify-center ${
+                  className={`h-14 rounded-xl text-xs flex flex-col items-center justify-center gap-1 ${
                     callState?.isRecording
                       ? "border border-rose-400/70 bg-rose-500/20 text-rose-50"
                       : "border border-white/10 bg-slate-900/60 text-slate-400 opacity-60"
                   }`}
                 >
-                  <span className="flex items-center gap-2">
-                    <Circle
-                      className={`h-3 w-3 ${
-                        callState?.isRecording
-                          ? "fill-rose-500 text-rose-500 animate-pulse"
-                          : "text-rose-400"
-                      }`}
-                    />
-                    {callState?.isRecording ? "Recording" : "Not Rec"}
+                  <Circle
+                    className={`h-4 w-4 ${
+                      callState?.isRecording ? "fill-rose-500 animate-pulse" : ""
+                    }`}
+                  />
+                  <span className="text-[10px]">
+                    {callState?.isRecording ? "Rec" : "No Rec"}
                   </span>
                 </div>
+
+                {/* Keypad Button */}
+                <Button
+                  onClick={() => setShowKeypad(!showKeypad)}
+                  variant={showKeypad ? "default" : "outline"}
+                  className={`h-14 rounded-xl text-xs flex flex-col items-center justify-center gap-1 ${
+                    showKeypad
+                      ? "border-purple-400/60 bg-purple-500/20 text-purple-50"
+                      : "border-white/10 bg-slate-900/60 text-slate-100 hover:border-purple-400/60 hover:bg-purple-500/10"
+                  }`}
+                >
+                  <Hash className="h-5 w-5" />
+                  <span className="text-[10px]">Keypad</span>
+                </Button>
               </div>
+            </div>
+
+            {/* DTMF Keypad Overlay */}
+            {showKeypad && (
+              <div className="mt-4 rounded-2xl border border-purple-400/40 bg-gradient-to-br from-purple-500/10 to-slate-950/90 p-4 shadow-lg shadow-purple-500/20">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="text-xs font-semibold uppercase tracking-[0.2em] text-purple-300">
+                    Send Tones (DTMF)
+                  </div>
+                  <button
+                    onClick={() => setShowKeypad(false)}
+                    className="text-slate-400 hover:text-slate-200 text-xs"
+                  >
+                    ✕ Close
+                  </button>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {dialPad.map((digit) => (
+                    <button
+                      key={digit}
+                      onClick={() => sendDTMF(digit)}
+                      className="group h-14 rounded-xl border border-white/10 bg-slate-900/70 text-2xl font-semibold text-slate-100 shadow hover:border-purple-400/60 hover:bg-purple-500/20 hover:shadow-purple-500/30 active:scale-95 transition-all"
+                    >
+                      <span className="block transition-transform group-active:translate-y-0.5">
+                        {digit}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-3 text-[10px] text-center text-slate-400">
+                  Press digits to navigate phone menus (IVR systems)
+                </p>
+              </div>
+            )}
+
+            {/* Hang Up Button */}
+            <div className="mt-4">
               <Button
                 onClick={handleEndCall}
-                className="mt-4 h-12 w-full rounded-2xl bg-gradient-to-r from-rose-500 to-orange-500 text-sm sm:text-base font-semibold text-slate-950 shadow-lg shadow-rose-500/40 hover:opacity-95"
+                size="lg"
+                className="w-full h-14 rounded-2xl bg-gradient-to-r from-rose-500 to-rose-600 text-base font-semibold text-white shadow-lg shadow-rose-500/40 hover:opacity-95"
               >
                 <PhoneOff className="mr-2 h-5 w-5" />
                 End Call
-                <span className="ml-2 hidden text-xs font-normal text-rose-950/80 sm:inline">
+                <span className="ml-2 hidden text-xs font-normal text-rose-100/80 sm:inline">
                   (Esc)
                 </span>
               </Button>

@@ -15,10 +15,8 @@ import base64
 import json
 import asyncio
 
-
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
 
 # Telnyx Configuration - Using environment variables
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
@@ -35,14 +33,11 @@ if not TELNYX_VOICE_CONNECTION_ID:
 if not TELNYX_WEBRTC_CONNECTION_ID:
     raise ValueError("TELNYX_WEBRTC_CONNECTION_ID environment variable is required")
 
-
 active_calls = {}
-
 
 class InitiateCallRequest(BaseModel):
     to_number: str
     from_number: str
-
 
 @router.post("/initiate")
 async def initiate_call(request: InitiateCallRequest):
@@ -77,10 +72,9 @@ async def initiate_call(request: InitiateCallRequest):
                 "internal_call_id": internal_call_id,
                 "leg": "pstn"
             }).encode()).decode(),
-            # Add these parameters to avoid false busy signals
-            "timeout_secs": 60,  # Wait up to 60 seconds for answer
-            "time_limit_secs": 14400,  # 4 hour max call duration
-            "answering_machine_detection": "disabled",  # Disable AMD to avoid delays
+            "timeout_secs": 60,
+            "time_limit_secs": 14400,
+            "answering_machine_detection": "disabled",
         }
         
         logger.info(f"📞 Creating PSTN leg: {from_number} → {request.to_number}")
@@ -113,6 +107,8 @@ async def initiate_call(request: InitiateCallRequest):
             "is_recording": False,
             "recording_requested": False,
             "started_at": datetime.utcnow(),
+            "created_at": datetime.utcnow(),  # Added for analytics queries
+            "duration": 0,  # Will be updated when call ends
         }
         calls_collection.insert_one(call_doc)
         
@@ -129,7 +125,6 @@ async def initiate_call(request: InitiateCallRequest):
         logger.error(f"❌ Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/webhook/telnyx")
 async def telnyx_webhook(request: Request):
     """Handle webhooks and auto-start recording when call answered"""
@@ -142,7 +137,41 @@ async def telnyx_webhook(request: Request):
         
         logger.info(f"📞 Webhook event: {event_type}")
         
-        # Log hangup cause if call fails - helps debug busy signals
+        # CRITICAL FIX: Handle call.recording.saved (not recording.saved)
+        if event_type == "call.recording.saved":
+            call_control_id = event_payload.get("call_control_id")
+            recording_urls = event_payload.get("recording_urls", {})
+            public_recording_urls = event_payload.get("public_recording_urls", {})
+            
+            # Prefer public URLs, fallback to regular URLs
+            recording_url = (
+                public_recording_urls.get("mp3") or 
+                public_recording_urls.get("wav") or
+                recording_urls.get("mp3") or 
+                recording_urls.get("wav")
+            )
+            
+            if recording_url:
+                calls_collection = db.get_db()["call_logs"]
+                result = calls_collection.update_one(
+                    {"telnyx_call_control_id": call_control_id},
+                    {"$set": {
+                        "recording_url": recording_url,
+                        "recording_saved_at": datetime.utcnow(),
+                        "has_recording": True
+                    }}
+                )
+                
+                if result.modified_count > 0:
+                    logger.info(f"💾 Recording saved: {recording_url}")
+                else:
+                    logger.warning(f"⚠️ Call not found for recording: {call_control_id}")
+            else:
+                logger.warning(f"⚠️ No recording URL in webhook: {event_payload}")
+            
+            return {"status": "ok"}
+        
+        # Log hangup cause if call fails
         if event_type in ["call.hangup", "call.ended"]:
             hangup_cause = event_payload.get("hangup_cause", "unknown")
             hangup_source = event_payload.get("hangup_source", "unknown")
@@ -182,13 +211,16 @@ async def telnyx_webhook(request: Request):
             # Update call to active FIRST
             calls_collection.update_one(
                 {"call_id": internal_call_id},
-                {"$set": {"status": "active", "answered_at": datetime.utcnow()}}
+                {"$set": {
+                    "status": "active",
+                    "answered_at": datetime.utcnow()
+                }}
             )
             if internal_call_id in active_calls:
                 active_calls[internal_call_id]["status"] = "active"
             
-            # AUTO-START RECORDING with delay to ensure call is fully established
-            await asyncio.sleep(1)  # Wait 1 second for audio to stabilize
+            # AUTO-START RECORDING with delay
+            await asyncio.sleep(1)
             
             # Only try to start recording if not already requested
             if not call_doc.get("recording_requested"):
@@ -247,19 +279,26 @@ async def telnyx_webhook(request: Request):
                 }}
             )
         
-        # Handle call end from EITHER side (client or browser)
+        # Handle call end
         elif event_type in ["call.hangup", "call.ended"]:
             hangup_cause = event_payload.get("hangup_cause", "normal")
             hangup_source = event_payload.get("hangup_source", "unknown")
             sip_code = event_payload.get("sip_code", "unknown")
             
-            logger.info(f"📴 Call ended: {internal_call_id}, cause: {hangup_cause}, source: {hangup_source}, SIP: {sip_code}")
+            # Calculate call duration
+            started_at = call_doc.get("answered_at") or call_doc.get("started_at")
+            duration = 0
+            if started_at:
+                duration = int((datetime.utcnow() - started_at).total_seconds())
+            
+            logger.info(f"📴 Call ended: {internal_call_id}, cause: {hangup_cause}, duration: {duration}s")
             
             calls_collection.update_one(
                 {"call_id": internal_call_id},
                 {"$set": {
                     "status": "ended",
                     "ended_at": datetime.utcnow(),
+                    "duration": duration,
                     "hangup_cause": hangup_cause,
                     "hangup_source": hangup_source,
                     "sip_code": sip_code
@@ -268,27 +307,11 @@ async def telnyx_webhook(request: Request):
             if internal_call_id in active_calls:
                 del active_calls[internal_call_id]
         
-        # Handle recording.saved event (when recording is ready for download)
-        elif event_type == "recording.saved":
-            recording_urls = event_payload.get("recording_urls", {})
-            recording_url = recording_urls.get("mp3") or recording_urls.get("wav")
-            
-            if recording_url:
-                calls_collection.update_one(
-                    {"call_id": internal_call_id},
-                    {"$set": {
-                        "recording_url": recording_url,
-                        "recording_saved_at": datetime.utcnow()
-                    }}
-                )
-                logger.info(f"💾 Recording saved: {recording_url}")
-        
         return {"status": "ok"}
         
     except Exception as e:
         logger.error(f"❌ Webhook error: {str(e)}")
         return {"status": "error", "message": str(e)}
-
 
 @router.post("/hangup/{call_id}")
 async def hangup_call(call_id: str):
@@ -336,9 +359,19 @@ async def hangup_call(call_id: str):
             except Exception as e:
                 logger.error(f"Error hanging up {pstn_call_control_id}: {e}")
         
+        # Calculate duration before updating
+        started_at = call_doc.get("answered_at") or call_doc.get("started_at")
+        duration = 0
+        if started_at:
+            duration = int((datetime.utcnow() - started_at).total_seconds())
+        
         calls_collection.update_one(
             {"call_id": call_id},
-            {"$set": {"status": "ended", "ended_at": datetime.utcnow()}}
+            {"$set": {
+                "status": "ended",
+                "ended_at": datetime.utcnow(),
+                "duration": duration
+            }}
         )
         
         if call_id in active_calls:
@@ -352,7 +385,6 @@ async def hangup_call(call_id: str):
     except Exception as e:
         logger.error(f"❌ Hangup error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.post("/recording/start/{call_id}")
 async def start_recording(call_id: str):
@@ -398,7 +430,6 @@ async def start_recording(call_id: str):
         logger.error(f"❌ Start recording error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/recording/stop/{call_id}")
 async def stop_recording(call_id: str):
     """Manually stop recording"""
@@ -422,7 +453,7 @@ async def stop_recording(call_id: str):
                 headers=headers,
             )
         
-        if response.status_code in [200, 422]:  # 422 = already stopped
+        if response.status_code in [200, 422]:
             calls_collection.update_one(
                 {"call_id": call_id},
                 {"$set": {"is_recording": False}}
@@ -439,7 +470,6 @@ async def stop_recording(call_id: str):
         logger.error(f"❌ Stop recording error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/status/{call_id}")
 async def get_status(call_id: str):
     """Get call status with recording info"""
@@ -454,7 +484,9 @@ async def get_status(call_id: str):
         "status": call_doc.get("status"),
         "to": call_doc.get("to_number"),
         "from": call_doc.get("from_number"),
+        "duration": call_doc.get("duration", 0),
         "is_recording": call_doc.get("is_recording", False),
+        "has_recording": call_doc.get("has_recording", False),
         "recording_url": call_doc.get("recording_url"),
         "hangup_cause": call_doc.get("hangup_cause"),
         "hangup_source": call_doc.get("hangup_source"),

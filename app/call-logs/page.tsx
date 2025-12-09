@@ -15,7 +15,21 @@ import {
   Cell,
   Legend
 } from "recharts"
-import { Edit, Trash2, Download, RefreshCw, Save, X } from "lucide-react"
+import { 
+  Edit, 
+  Trash2, 
+  Download, 
+  RefreshCw, 
+  Save, 
+  X, 
+  CheckSquare, 
+  Square,
+  Filter,
+  Search,
+  Calendar,
+  FileDown,
+  MoreVertical
+} from "lucide-react"
 import { useApiConfig } from "@/hooks/use-api-config"
 
 const DEMO_LOGS = [
@@ -115,6 +129,12 @@ export default function CallLogsPage() {
   })
   const [filterDisposition, setFilterDisposition] = useState<string>("all")
   const [isRefreshing, setIsRefreshing] = useState(false)
+  
+  // Selection and bulk actions
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [searchQuery, setSearchQuery] = useState("")
+  const [showFilters, setShowFilters] = useState(false)
+  const [dateFilter, setDateFilter] = useState<string>("all")
 
   useEffect(() => {
     fetchCallLogs()
@@ -167,6 +187,7 @@ export default function CallLogsPage() {
   const handleRefresh = async () => {
     setIsRefreshing(true)
     await fetchCallLogs()
+    setSelectedIds(new Set())
     setTimeout(() => setIsRefreshing(false), 500)
   }
 
@@ -218,7 +239,6 @@ export default function CallLogsPage() {
         calculateStats(updatedLogs)
         setEditingId(null)
       } else {
-        // Demo mode fallback
         const updatedLogs = logs.map((log) =>
           log._id === logId
             ? {
@@ -238,7 +258,6 @@ export default function CallLogsPage() {
       }
     } catch (error) {
       console.error("Error saving call log:", error)
-      // Demo mode fallback
       const updatedLogs = logs.map((log) =>
         log._id === logId
           ? {
@@ -270,28 +289,134 @@ export default function CallLogsPage() {
         const updatedLogs = logs.filter((log) => log._id !== logId)
         setLogs(updatedLogs)
         calculateStats(updatedLogs)
+        setSelectedIds(prev => {
+          const next = new Set(prev)
+          next.delete(logId)
+          return next
+        })
       }
     } catch (error) {
       console.error("Error deleting log:", error)
-      // Demo mode fallback
       const updatedLogs = logs.filter((log) => log._id !== logId)
       setLogs(updatedLogs)
       calculateStats(updatedLogs)
     }
   }
 
-  const filteredLogs = filterDisposition === "all" 
-    ? logs 
-    : logs.filter((log) => log.disposition === filterDisposition)
+  const bulkDelete = async () => {
+    if (selectedIds.size === 0) return
+    if (!confirm(`Delete ${selectedIds.size} selected call logs?`)) return
+
+    const idsToDelete = Array.from(selectedIds)
+    
+    try {
+      await Promise.all(
+        idsToDelete.map(id => 
+          fetch(`${apiUrl}/api/webrtc/logs/${id}`, { method: "DELETE" })
+        )
+      )
+      
+      const updatedLogs = logs.filter(log => !selectedIds.has(log._id))
+      setLogs(updatedLogs)
+      calculateStats(updatedLogs)
+      setSelectedIds(new Set())
+    } catch (error) {
+      console.error("Error bulk deleting:", error)
+      const updatedLogs = logs.filter(log => !selectedIds.has(log._id))
+      setLogs(updatedLogs)
+      calculateStats(updatedLogs)
+      setSelectedIds(new Set())
+    }
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === filteredLogs.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(filteredLogs.map(log => log._id)))
+    }
+  }
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  const exportToCSV = () => {
+    const dataToExport = selectedIds.size > 0 
+      ? logs.filter(log => selectedIds.has(log._id))
+      : filteredLogs
+
+    const headers = ["Call ID", "From", "To", "Duration", "Disposition", "Notes", "Tags", "Date"]
+    const rows = dataToExport.map(log => [
+      log.call_id,
+      log.from_number,
+      log.to_number,
+      formatDuration(log.duration),
+      log.disposition || "N/A",
+      log.notes || "",
+      log.tags?.join("; ") || "",
+      new Date(log.created_at).toLocaleString()
+    ])
+
+    const csv = [headers, ...rows].map(row => row.map(cell => `"${cell}"`).join(",")).join("\n")
+    const blob = new Blob([csv], { type: "text/csv" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `call-logs-${new Date().toISOString().split('T')[0]}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const filteredLogs = logs.filter(log => {
+    if (filterDisposition !== "all" && log.disposition !== filterDisposition) {
+      return false
+    }
+
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase()
+      const matchesSearch = 
+        log.to_number?.toLowerCase().includes(query) ||
+        log.from_number?.toLowerCase().includes(query) ||
+        log.notes?.toLowerCase().includes(query) ||
+        log.tags?.some(tag => tag.toLowerCase().includes(query))
+      
+      if (!matchesSearch) return false
+    }
+
+    if (dateFilter !== "all") {
+      const logDate = new Date(log.created_at)
+      const now = new Date()
+      
+      if (dateFilter === "today") {
+        if (logDate.toDateString() !== now.toDateString()) return false
+      } else if (dateFilter === "week") {
+        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+        if (logDate < weekAgo) return false
+      } else if (dateFilter === "month") {
+        const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+        if (logDate < monthAgo) return false
+      }
+    }
+
+    return true
+  })
 
   const dispositionData = [
     { name: "Completed", value: stats.completed, color: "#10b981" },
     { name: "Failed", value: stats.failed, color: "#ef4444" },
     { name: "Busy", value: stats.busy, color: "#f59e0b" },
     { name: "No Answer", value: stats.noAnswer, color: "#3b82f6" },
-  ].filter(item => item.value > 0) // Only show non-zero values
+  ].filter(item => item.value > 0)
 
-  // Duration data for bar chart (last 7 days)
   const getDurationTrendData = () => {
     const last7Days = Array.from({ length: 7 }, (_, i) => {
       const date = new Date()
@@ -306,7 +431,7 @@ export default function CallLogsPage() {
       const totalDuration = dayLogs.reduce((sum, log) => sum + (log.duration || 0), 0)
       return {
         date: new Date(date).toLocaleDateString('en-US', { weekday: 'short' }),
-        duration: Math.floor(totalDuration / 60), // Convert to minutes
+        duration: Math.floor(totalDuration / 60),
         calls: dayLogs.length
       }
     })
@@ -334,14 +459,24 @@ export default function CallLogsPage() {
               Track and analyze your call performance
             </p>
           </div>
-          <button
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={exportToCSV}
+              className="flex items-center gap-2 px-4 py-2 bg-card border border-border rounded-lg hover:bg-input transition-colors"
+              title="Export to CSV"
+            >
+              <FileDown className="w-4 h-4" />
+              <span className="hidden sm:inline">Export</span>
+            </button>
+            <button
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Refresh</span>
+            </button>
+          </div>
         </div>
 
         {useDemo && (
@@ -353,28 +488,28 @@ export default function CallLogsPage() {
         )}
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-8">
-          <div className="bg-card rounded-lg border border-border p-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+          <div className="bg-card rounded-lg border border-border p-4 hover:shadow-lg transition-shadow">
             <p className="text-xs text-muted-foreground uppercase font-semibold">Total Calls</p>
             <p className="text-2xl font-bold text-accent mt-1">{stats.total}</p>
           </div>
-          <div className="bg-card rounded-lg border border-border p-4">
+          <div className="bg-card rounded-lg border border-border p-4 hover:shadow-lg transition-shadow">
             <p className="text-xs text-muted-foreground uppercase font-semibold">Completed</p>
             <p className="text-2xl font-bold text-green-500 mt-1">{stats.completed}</p>
           </div>
-          <div className="bg-card rounded-lg border border-border p-4">
+          <div className="bg-card rounded-lg border border-border p-4 hover:shadow-lg transition-shadow">
             <p className="text-xs text-muted-foreground uppercase font-semibold">Failed</p>
             <p className="text-2xl font-bold text-destructive mt-1">{stats.failed}</p>
           </div>
-          <div className="bg-card rounded-lg border border-border p-4">
+          <div className="bg-card rounded-lg border border-border p-4 hover:shadow-lg transition-shadow">
             <p className="text-xs text-muted-foreground uppercase font-semibold">Busy</p>
             <p className="text-2xl font-bold text-yellow-500 mt-1">{stats.busy}</p>
           </div>
-          <div className="bg-card rounded-lg border border-border p-4">
+          <div className="bg-card rounded-lg border border-border p-4 hover:shadow-lg transition-shadow">
             <p className="text-xs text-muted-foreground uppercase font-semibold">No Answer</p>
             <p className="text-2xl font-bold text-ring mt-1">{stats.noAnswer}</p>
           </div>
-          <div className="bg-card rounded-lg border border-border p-4">
+          <div className="bg-card rounded-lg border border-border p-4 hover:shadow-lg transition-shadow">
             <p className="text-xs text-muted-foreground uppercase font-semibold">Avg Duration</p>
             <p className="text-2xl font-bold text-primary mt-1">{formatDuration(stats.avgDuration)}</p>
           </div>
@@ -383,7 +518,7 @@ export default function CallLogsPage() {
         {/* Charts */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
           {/* Pie Chart */}
-          <div className="bg-card rounded-lg border border-border p-6">
+          <div className="bg-card rounded-lg border border-border p-6 hover:shadow-lg transition-shadow">
             <h2 className="font-bold text-lg mb-4">Disposition Breakdown</h2>
             {dispositionData.length > 0 ? (
               <ResponsiveContainer width="100%" height={300}>
@@ -394,7 +529,7 @@ export default function CallLogsPage() {
                     cy="50%"
                     labelLine={false}
                     label={({ name, value, percent }) => 
-                      `${name}: ${value} (${(percent * 100).toFixed(0)}%)`
+                      `${name}: ${value} (${((percent || 0) * 100).toFixed(0)}%)`
                     }
                     outerRadius={100}
                     fill="#8884d8"
@@ -416,7 +551,7 @@ export default function CallLogsPage() {
           </div>
 
           {/* Bar Chart */}
-          <div className="bg-card rounded-lg border border-border p-6">
+          <div className="bg-card rounded-lg border border-border p-6 hover:shadow-lg transition-shadow">
             <h2 className="font-bold text-lg mb-4">Call Duration Trend (Last 7 Days)</h2>
             {durationTrendData.some(d => d.calls > 0) ? (
               <ResponsiveContainer width="100%" height={300}>
@@ -444,22 +579,76 @@ export default function CallLogsPage() {
         </div>
 
         {/* Call Logs Table */}
-        <div className="bg-card rounded-lg border border-border overflow-hidden">
-          <div className="p-4 border-b border-border flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-            <h2 className="font-bold text-lg">Recent Calls</h2>
-            <div className="flex gap-2 w-full sm:w-auto">
-              <select
-                value={filterDisposition}
-                onChange={(e) => setFilterDisposition(e.target.value)}
-                className="flex-1 sm:flex-initial px-3 py-2 bg-input border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-              >
-                <option value="all">All Dispositions</option>
-                <option value="completed">Completed</option>
-                <option value="failed">Failed</option>
-                <option value="busy">Busy</option>
-                <option value="no_answer">No Answer</option>
-              </select>
+        <div className="bg-card rounded-lg border border-border overflow-hidden shadow-lg">
+          {/* Filters and Search Bar */}
+          <div className="p-4 border-b border-border bg-input/30">
+            <div className="flex flex-col lg:flex-row gap-4">
+              {/* Search */}
+              <div className="flex-1 relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search by number, notes, or tags..."
+                  className="w-full pl-10 pr-4 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  aria-label="Search call logs"
+                />
+              </div>
+
+              {/* Filters */}
+              <div className="flex gap-2 flex-wrap">
+                <select
+                  value={dateFilter}
+                  onChange={(e) => setDateFilter(e.target.value)}
+                  className="px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  aria-label="Filter by date range"
+                >
+                  <option value="all">All Time</option>
+                  <option value="today">Today</option>
+                  <option value="week">Last 7 Days</option>
+                  <option value="month">Last 30 Days</option>
+                </select>
+
+                <select
+                  value={filterDisposition}
+                  onChange={(e) => setFilterDisposition(e.target.value)}
+                  className="px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  aria-label="Filter by disposition"
+                >
+                  <option value="all">All Dispositions</option>
+                  <option value="completed">Completed</option>
+                  <option value="failed">Failed</option>
+                  <option value="busy">Busy</option>
+                  <option value="no_answer">No Answer</option>
+                </select>
+              </div>
             </div>
+
+            {/* Bulk Actions Bar */}
+            {selectedIds.size > 0 && (
+              <div className="mt-4 flex items-center gap-4 p-3 bg-primary/10 border border-primary/20 rounded-lg">
+                <span className="text-sm font-medium">
+                  {selectedIds.size} selected
+                </span>
+                <div className="flex gap-2 ml-auto">
+                  <button
+                    onClick={exportToCSV}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors text-sm"
+                  >
+                    <FileDown className="w-4 h-4" />
+                    Export Selected
+                  </button>
+                  <button
+                    onClick={bulkDelete}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-destructive text-destructive-foreground rounded-lg hover:bg-destructive/90 transition-colors text-sm"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Delete Selected
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
           
           {loading ? (
@@ -469,19 +658,35 @@ export default function CallLogsPage() {
             </div>
           ) : filteredLogs.length === 0 ? (
             <div className="p-8 text-center text-muted-foreground">
-              No call logs found
+              <p className="text-lg font-medium">No call logs found</p>
+              <p className="text-sm mt-1">Try adjusting your filters or search query</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-input border-b border-border">
+                <thead className="bg-input border-b border-border sticky top-0">
                   <tr>
+                    <th className="px-4 py-3 text-left">
+                      <button
+                        onClick={toggleSelectAll}
+                        className="hover:bg-background/50 rounded p-1 transition-colors"
+                        title={selectedIds.size === filteredLogs.length ? "Deselect all" : "Select all"}
+                        aria-label={selectedIds.size === filteredLogs.length ? "Deselect all rows" : "Select all rows"}
+                      >
+                        {selectedIds.size === filteredLogs.length ? (
+                          <CheckSquare className="w-5 h-5 text-primary" />
+                        ) : (
+                          <Square className="w-5 h-5" />
+                        )}
+                      </button>
+                    </th>
                     <th className="px-4 py-3 text-left font-semibold">From</th>
                     <th className="px-4 py-3 text-left font-semibold">To</th>
                     <th className="px-4 py-3 text-left font-semibold">Duration</th>
                     <th className="px-4 py-3 text-left font-semibold">Disposition</th>
                     <th className="px-4 py-3 text-left font-semibold">Notes</th>
                     <th className="px-4 py-3 text-left font-semibold">Tags</th>
+                    <th className="px-4 py-3 text-left font-semibold">Date</th>
                     <th className="px-4 py-3 text-left font-semibold">Actions</th>
                   </tr>
                 </thead>
@@ -489,8 +694,23 @@ export default function CallLogsPage() {
                   {filteredLogs.map((log) => (
                     <tr 
                       key={log._id} 
-                      className="border-b border-border hover:bg-input/50 transition-colors"
+                      className={`border-b border-border hover:bg-input/50 transition-colors ${
+                        selectedIds.has(log._id) ? 'bg-primary/5' : ''
+                      }`}
                     >
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => toggleSelect(log._id)}
+                          className="hover:bg-background/50 rounded p-1 transition-colors"
+                          aria-label={selectedIds.has(log._id) ? "Deselect row" : "Select row"}
+                        >
+                          {selectedIds.has(log._id) ? (
+                            <CheckSquare className="w-5 h-5 text-primary" />
+                          ) : (
+                            <Square className="w-5 h-5" />
+                          )}
+                        </button>
+                      </td>
                       <td className="px-4 py-3 font-mono text-xs">{log.from_number}</td>
                       <td className="px-4 py-3 font-mono text-xs">{log.to_number}</td>
                       <td className="px-4 py-3 font-mono">{formatDuration(log.duration)}</td>
@@ -500,6 +720,7 @@ export default function CallLogsPage() {
                             value={editForm.disposition}
                             onChange={(e) => setEditForm({ ...editForm, disposition: e.target.value })}
                             className="px-2 py-1 bg-input border border-border rounded text-xs w-full focus:outline-none focus:ring-2 focus:ring-primary"
+                            aria-label="Edit disposition"
                           >
                             <option value="completed">Completed</option>
                             <option value="failed">Failed</option>
@@ -530,6 +751,7 @@ export default function CallLogsPage() {
                             onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
                             className="w-full px-2 py-1 bg-input border border-border rounded text-xs focus:outline-none focus:ring-2 focus:ring-primary"
                             placeholder="Add notes..."
+                            aria-label="Edit notes"
                           />
                         ) : (
                           <span className="line-clamp-2">{log.notes || "-"}</span>
@@ -543,6 +765,7 @@ export default function CallLogsPage() {
                             onChange={(e) => setEditForm({ ...editForm, tags: e.target.value })}
                             className="w-full px-2 py-1 bg-input border border-border rounded text-xs focus:outline-none focus:ring-2 focus:ring-primary"
                             placeholder="tag1, tag2"
+                            aria-label="Edit tags"
                           />
                         ) : (
                           <div className="flex gap-1 flex-wrap">
@@ -561,6 +784,9 @@ export default function CallLogsPage() {
                           </div>
                         )}
                       </td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground">
+                        {new Date(log.created_at).toLocaleString()}
+                      </td>
                       <td className="px-4 py-3">
                         <div className="flex gap-1 items-center">
                           {editingId === log._id ? (
@@ -569,6 +795,7 @@ export default function CallLogsPage() {
                                 onClick={() => saveEdit(log._id)}
                                 className="p-1.5 bg-accent text-accent-foreground rounded hover:opacity-80 transition-opacity"
                                 title="Save changes"
+                                aria-label="Save changes"
                               >
                                 <Save className="w-4 h-4" />
                               </button>
@@ -576,6 +803,7 @@ export default function CallLogsPage() {
                                 onClick={cancelEdit}
                                 className="p-1.5 bg-input border border-border rounded hover:bg-muted transition-colors"
                                 title="Cancel"
+                                aria-label="Cancel editing"
                               >
                                 <X className="w-4 h-4" />
                               </button>
@@ -586,6 +814,7 @@ export default function CallLogsPage() {
                                 onClick={() => startEditing(log)}
                                 className="p-1.5 hover:bg-input rounded transition-colors"
                                 title="Edit"
+                                aria-label="Edit log"
                               >
                                 <Edit className="w-4 h-4" />
                               </button>
@@ -593,6 +822,7 @@ export default function CallLogsPage() {
                                 onClick={() => deleteLog(log._id)}
                                 className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
                                 title="Delete"
+                                aria-label="Delete log"
                               >
                                 <Trash2 className="w-4 h-4 text-destructive" />
                               </button>
@@ -603,6 +833,7 @@ export default function CallLogsPage() {
                                   title="Download Recording"
                                   target="_blank"
                                   rel="noopener noreferrer"
+                                  aria-label="Download recording"
                                 >
                                   <Download className="w-4 h-4 text-primary" />
                                 </a>
@@ -620,8 +851,18 @@ export default function CallLogsPage() {
           
           {/* Results count */}
           {!loading && filteredLogs.length > 0 && (
-            <div className="p-3 text-center text-xs text-muted-foreground border-t border-border">
-              Showing {filteredLogs.length} of {logs.length} calls
+            <div className="p-3 flex items-center justify-between text-xs text-muted-foreground border-t border-border bg-input/30">
+              <span>
+                Showing {filteredLogs.length} of {logs.length} calls
+              </span>
+              {selectedIds.size > 0 && (
+                <button
+                  onClick={() => setSelectedIds(new Set())}
+                  className="text-primary hover:underline"
+                >
+                  Clear selection
+                </button>
+              )}
             </div>
           )}
         </div>

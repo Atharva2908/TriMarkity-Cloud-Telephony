@@ -572,15 +572,30 @@ async def telnyx_webhook(request: Request):
         logger.error(f"❌ Webhook error: {str(e)}")
         return {"status": "error", "message": str(e)}
 
+# ✅ FIXED: Idempotent hangup endpoint
 @router.post("/hangup/{call_id}")
 async def hangup_call(call_id: str):
-    """Hangup call and stop recording"""
+    """
+    Hangup call and stop recording - IDEMPOTENT (safe to call multiple times)
+    Returns success even if call is already ended
+    """
     try:
         calls_collection = db.get_db()["call_logs"]
         call_doc = calls_collection.find_one({"call_id": call_id})
         
         if not call_doc:
             raise HTTPException(status_code=404, detail="Call not found")
+        
+        # ✅ Check if call is already ended
+        current_status = call_doc.get("status")
+        if current_status in ["ended", "completed", "failed"]:
+            logger.info(f"ℹ️ Call {call_id} already ended (status: {current_status})")
+            return {
+                "status": "already_ended",
+                "call_id": call_id,
+                "duration": call_doc.get("duration", 0),
+                "message": "Call was already ended"
+            }
         
         headers = {
             "Authorization": f"Bearer {TELNYX_API_KEY}",
@@ -589,7 +604,7 @@ async def hangup_call(call_id: str):
         
         pstn_call_control_id = call_doc.get("telnyx_call_control_id")
         
-        # Stop recording first
+        # Try to stop recording first (ignore errors)
         if call_doc.get("is_recording") and pstn_call_control_id:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
@@ -598,10 +613,12 @@ async def hangup_call(call_id: str):
                         headers=headers,
                     )
                 logger.info(f"⏹️ Recording stopped: {call_id}")
+            except httpx.TimeoutException:
+                logger.warning(f"⚠️ Recording stop timeout for {call_id}")
             except Exception as e:
-                logger.error(f"Error stopping recording: {e}")
+                logger.warning(f"⚠️ Recording stop error (may already be stopped): {e}")
         
-        # Hangup call
+        # Try to hangup call (ignore errors for already-ended calls)
         if pstn_call_control_id:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
@@ -609,11 +626,21 @@ async def hangup_call(call_id: str):
                         f"{TELNYX_BASE_URL}/calls/{pstn_call_control_id}/actions/hangup",
                         headers=headers,
                     )
+                
                 if response.status_code == 200:
-                    logger.info(f"📴 Hung up: {pstn_call_control_id}")
+                    logger.info(f"✅ Call hung up: {pstn_call_control_id}")
+                elif response.status_code == 422:
+                    # 422 = Call already ended on Telnyx side
+                    logger.info(f"ℹ️ Call already ended on Telnyx: {pstn_call_control_id}")
+                else:
+                    logger.warning(f"⚠️ Hangup returned {response.status_code}: {response.text}")
+                    
+            except httpx.TimeoutException:
+                logger.warning(f"⚠️ Hangup timeout for {pstn_call_control_id}")
             except Exception as e:
-                logger.error(f"Error hanging up: {e}")
+                logger.warning(f"⚠️ Hangup error (may already be ended): {e}")
         
+        # ✅ Always update database state (even if Telnyx calls failed)
         started_at = call_doc.get("answered_at") or call_doc.get("started_at")
         duration = 0
         if started_at:
@@ -624,12 +651,25 @@ async def hangup_call(call_id: str):
             {"$set": {
                 "status": "ended",
                 "ended_at": datetime.utcnow(),
-                "duration": duration
+                "duration": duration,
+                "updated_at": datetime.utcnow()
             }}
         )
         
-        logger.info(f"✅ Call ended: {call_id}")
-        return {"status": "ended"}
+        # Broadcast call ended event
+        await manager.broadcast({
+            "type": "call_ended",
+            "call_id": call_id,
+            "duration": duration
+        })
+        
+        logger.info(f"✅ Call cleanup complete: {call_id}")
+        return {
+            "status": "ended",
+            "call_id": call_id,
+            "duration": duration,
+            "message": "Call ended successfully"
+        }
         
     except HTTPException:
         raise
@@ -648,7 +688,10 @@ async def start_recording(call_id: str):
             raise HTTPException(status_code=404, detail="Call not found")
         
         if call_doc.get("status") != "active":
-            raise HTTPException(status_code=400, detail="Call must be active")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Call must be active to start recording (current status: {call_doc.get('status')})"
+            )
         
         pstn_call_control_id = call_doc.get("telnyx_call_control_id")
         
@@ -667,12 +710,17 @@ async def start_recording(call_id: str):
         if response.status_code == 200:
             calls_collection.update_one(
                 {"call_id": call_id},
-                {"$set": {"is_recording": True, "recording_requested": True}}
+                {"$set": {
+                    "is_recording": True, 
+                    "recording_requested": True,
+                    "recording_started_at": datetime.utcnow()
+                }}
             )
             logger.info(f"🔴 Recording started: {call_id}")
-            return {"status": "recording_started"}
+            return {"status": "recording_started", "call_id": call_id}
         else:
-            raise HTTPException(status_code=400, detail=response.text)
+            error_data = response.json() if response.text else {}
+            raise HTTPException(status_code=400, detail=error_data.get("errors", response.text))
             
     except HTTPException:
         raise
@@ -706,12 +754,16 @@ async def stop_recording(call_id: str):
         if response.status_code in [200, 422]:
             calls_collection.update_one(
                 {"call_id": call_id},
-                {"$set": {"is_recording": False}}
+                {"$set": {
+                    "is_recording": False,
+                    "recording_stopped_at": datetime.utcnow()
+                }}
             )
             logger.info(f"⏹️ Recording stopped: {call_id}")
-            return {"status": "recording_stopped"}
+            return {"status": "recording_stopped", "call_id": call_id}
         else:
-            raise HTTPException(status_code=400, detail=response.text)
+            error_data = response.json() if response.text else {}
+            raise HTTPException(status_code=400, detail=error_data.get("errors", response.text))
             
     except HTTPException:
         raise

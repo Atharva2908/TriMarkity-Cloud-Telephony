@@ -36,6 +36,7 @@ export function OutboundCalling({ demoMode = false }: OutboundCallingProps) {
   const [autoReconnect, setAutoReconnect] = useState(true)
   const [autoHangup, setAutoHangup] = useState(60)
   const [error, setError] = useState<string | null>(null)
+  const [isHangingUp, setIsHangingUp] = useState(false)
 
   // Fetch available numbers
   useEffect(() => {
@@ -73,6 +74,18 @@ export function OutboundCalling({ demoMode = false }: OutboundCallingProps) {
       return () => clearInterval(timer)
     }
   }, [call?.status])
+
+  // Auto-hangup timer
+  useEffect(() => {
+    if (call?.status === "active" && autoHangup > 0) {
+      const hangupTimer = setTimeout(() => {
+        console.log(`⏰ Auto-hangup triggered after ${autoHangup} seconds`)
+        handleHangup()
+      }, autoHangup * 1000)
+
+      return () => clearTimeout(hangupTimer)
+    }
+  }, [call?.status, autoHangup])
 
   const handleInitiateCall = useCallback(async () => {
     if (!toNumber || !fromNumber) return
@@ -144,56 +157,161 @@ export function OutboundCalling({ demoMode = false }: OutboundCallingProps) {
     }
   }, [toNumber, fromNumber, ttsMessage, autoReconnect, autoHangup, apiUrl, demoMode])
 
+  // ✅ FIXED: Better hangup handling to prevent "bye failed" error
   const handleHangup = useCallback(async () => {
-    if (!call) return
+    if (!call || isHangingUp) {
+      console.warn("⚠️ No active call or already hanging up")
+      return
+    }
 
     try {
-      if (!demoMode) {
-        await fetch(`${apiUrl}/api/calls/${call.call_id}/hangup`, {
-          method: "POST",
-        })
+      setIsHangingUp(true)
+      console.log(`📴 Hanging up call: ${call.call_id} (status: ${call.status})`)
+
+      // Check if call is already ended
+      if (call.status === "ended" || call.status === "failed") {
+        console.log("ℹ️ Call already ended, cleaning up local state only")
+        setCall(null)
+        setToNumber("")
+        setTtsMessage("")
+        setError(null)
+        setIsHangingUp(false)
+        return
       }
+
+      // Call backend to hangup (backend handles idempotency)
+      if (!demoMode) {
+        try {
+          const response = await fetch(`${apiUrl}/api/webrtc/hangup/${call.call_id}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          })
+
+          if (response.ok) {
+            const data = await response.json()
+            console.log("✅ Backend hangup successful:", data)
+          } else {
+            const errorData = await response.json().catch(() => ({}))
+            console.warn("⚠️ Backend hangup failed:", errorData)
+            
+            // If it's 404, the call is already gone - that's okay
+            if (response.status === 404) {
+              console.log("ℹ️ Call not found on backend (already ended)")
+            } else {
+              throw new Error(errorData.detail || "Hangup failed")
+            }
+          }
+        } catch (backendError) {
+          console.error("❌ Backend hangup error:", backendError)
+          // Don't throw - we'll clean up local state anyway
+        }
+      }
+
+      // Always clean up local state, regardless of backend response
       setCall(null)
       setToNumber("")
       setTtsMessage("")
       setError(null)
-    } catch (err) {
-      console.error("Error hanging up:", err)
-      setError("Failed to hang up call")
-    }
-  }, [call, apiUrl, demoMode])
+      
+      console.log("🧹 Call cleanup complete")
 
+    } catch (err) {
+      console.error("❌ Hangup error:", err)
+      setError("Failed to hang up call properly")
+      
+      // Force cleanup even on error
+      setCall(null)
+      setToNumber("")
+      setTtsMessage("")
+      
+    } finally {
+      setIsHangingUp(false)
+    }
+  }, [call, apiUrl, demoMode, isHangingUp])
+
+  // ✅ FIXED: Better recording toggle with state validation
   const handleToggleRecording = useCallback(async () => {
-    if (!call || call.status !== "active") return
+    if (!call) {
+      console.warn("⚠️ No active call")
+      return
+    }
+
+    // Only allow recording toggle when call is active
+    if (call.status !== "active") {
+      console.warn(`⚠️ Cannot toggle recording - call is ${call.status}`)
+      setError(`Cannot toggle recording - call is ${call.status}`)
+      return
+    }
 
     try {
+      const newRecordingState = !call.is_recording
+      console.log(`🔴 ${newRecordingState ? "Starting" : "Stopping"} recording for call ${call.call_id}`)
+
       if (!demoMode) {
-        await fetch(`${apiUrl}/api/webrtc/recording/${call.call_id}`, {
+        const endpoint = newRecordingState 
+          ? `${apiUrl}/api/webrtc/recording/start/${call.call_id}`
+          : `${apiUrl}/api/webrtc/recording/stop/${call.call_id}`
+
+        const response = await fetch(endpoint, {
           method: "POST",
         })
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}))
+          throw new Error(errorData.detail || "Failed to toggle recording")
+        }
+
+        console.log(`✅ Recording ${newRecordingState ? "started" : "stopped"}`)
       }
 
-      setCall((prev) => (prev ? { ...prev, is_recording: !prev.is_recording } : null))
+      setCall((prev) => (prev ? { ...prev, is_recording: newRecordingState } : null))
+      setError(null)
+
     } catch (err) {
-      console.error("Error toggling recording:", err)
-      setError("Failed to toggle recording")
+      console.error("❌ Error toggling recording:", err)
+      setError(err instanceof Error ? err.message : "Failed to toggle recording")
     }
   }, [call, apiUrl, demoMode])
 
+  // ✅ FIXED: Better mute toggle with state validation
   const handleToggleMute = useCallback(async () => {
-    if (!call || call.status !== "active") return
+    if (!call) {
+      console.warn("⚠️ No active call")
+      return
+    }
+
+    // Only allow mute toggle when call is active
+    if (call.status !== "active") {
+      console.warn(`⚠️ Cannot toggle mute - call is ${call.status}`)
+      setError(`Cannot toggle mute - call is ${call.status}`)
+      return
+    }
 
     try {
+      const newMuteState = !call.is_muted
+      console.log(`🎤 ${newMuteState ? "Muting" : "Unmuting"} call ${call.call_id}`)
+
       if (!demoMode) {
-        await fetch(`${apiUrl}/api/webrtc/mute/${call.call_id}`, {
+        const response = await fetch(`${apiUrl}/api/webrtc/mute/${call.call_id}`, {
           method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ muted: newMuteState }),
         })
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}))
+          throw new Error(errorData.detail || "Failed to toggle mute")
+        }
+
+        console.log(`✅ ${newMuteState ? "Muted" : "Unmuted"}`)
       }
 
-      setCall((prev) => (prev ? { ...prev, is_muted: !prev.is_muted } : null))
+      setCall((prev) => (prev ? { ...prev, is_muted: newMuteState } : null))
+      setError(null)
+
     } catch (err) {
-      console.error("Error toggling mute:", err)
-      setError("Failed to toggle mute")
+      console.error("❌ Error toggling mute:", err)
+      setError(err instanceof Error ? err.message : "Failed to toggle mute")
     }
   }, [call, apiUrl, demoMode])
 
@@ -302,6 +420,7 @@ export function OutboundCalling({ demoMode = false }: OutboundCallingProps) {
               onClick={handleToggleMute}
               variant={call.is_muted ? "destructive" : "secondary"}
               className="h-12 gap-2"
+              disabled={isHangingUp}
             >
               {call.is_muted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
               {call.is_muted ? "Unmute" : "Mute"}
@@ -311,6 +430,7 @@ export function OutboundCalling({ demoMode = false }: OutboundCallingProps) {
               onClick={handleToggleRecording}
               variant={call.is_recording ? "destructive" : "secondary"}
               className="h-12 gap-2"
+              disabled={isHangingUp}
             >
               {call.is_recording ? <Pause className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
               {call.is_recording ? "Stop Rec" : "Record"}
@@ -319,19 +439,29 @@ export function OutboundCalling({ demoMode = false }: OutboundCallingProps) {
         )}
 
         {/* Error Display */}
-        {call.error && (
+        {(call.error || error) && (
           <Card className="p-3 bg-destructive/10 border-destructive/20">
-            <p className="text-destructive text-sm">{call.error}</p>
+            <p className="text-destructive text-sm">{call.error || error}</p>
           </Card>
         )}
 
         {/* Hangup Button */}
         <Button
           onClick={handleHangup}
-          className="w-full h-14 text-lg font-bold bg-gradient-to-r from-rose-500 to-red-600 hover:opacity-90 text-white gap-2"
+          disabled={isHangingUp}
+          className="w-full h-14 text-lg font-bold bg-gradient-to-r from-rose-500 to-red-600 hover:opacity-90 text-white gap-2 disabled:opacity-50"
         >
-          <PhoneOff className="w-5 h-5" />
-          End Call
+          {isHangingUp ? (
+            <>
+              <Loader2 className="w-5 h-5 animate-spin" />
+              Ending Call...
+            </>
+          ) : (
+            <>
+              <PhoneOff className="w-5 h-5" />
+              End Call
+            </>
+          )}
         </Button>
       </Card>
     )

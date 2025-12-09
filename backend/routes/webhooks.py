@@ -115,6 +115,104 @@ async def process_webhook_analytics(
         logger.error(f"❌ Analytics processing error: {str(e)}")
 
 
+async def process_recording_saved(
+    internal_call_id: str,
+    telnyx_session_id: str,
+    payload: dict,
+    call_doc: dict
+):
+    """
+    Process recording.saved webhook event
+    Saves recording metadata to MongoDB recordings collection
+    """
+    try:
+        db_instance = db.get_db()
+        recordings_collection = db_instance["recordings"]
+        calls_collection = db_instance["call_logs"]
+        
+        # Extract recording URLs - prefer public URLs
+        recording_urls = payload.get("recording_urls", {})
+        public_recording_urls = payload.get("public_recording_urls", {})
+        download_urls = payload.get("download_urls", {})
+        
+        # Try to get the best available URL (prefer mp3 > wav)
+        recording_url = (
+            public_recording_urls.get("mp3") or 
+            download_urls.get("mp3") or
+            recording_urls.get("mp3") or
+            public_recording_urls.get("wav") or 
+            download_urls.get("wav") or
+            recording_urls.get("wav") or
+            ""
+        )
+        
+        # Get recording metadata
+        recording_id = payload.get("recording_id") or payload.get("id")
+        recording_size = payload.get("size", 0)
+        recording_duration_ms = payload.get("duration_millis", 0)
+        recording_duration = recording_duration_ms // 1000 if recording_duration_ms else 0
+        recording_status = payload.get("status", "completed")
+        
+        # Get call details from call_doc
+        to_number = call_doc.get("to_number", "Unknown")
+        from_number = call_doc.get("from_number", "Unknown")
+        call_duration = call_doc.get("duration", recording_duration)
+        
+        # Create recording document
+        recording_doc = {
+            "call_id": internal_call_id,
+            "recording_id": recording_id,
+            "telnyx_session_id": telnyx_session_id,
+            "url": recording_url,
+            "size": recording_size,
+            "duration": recording_duration,
+            "to_number": to_number,
+            "from_number": from_number,
+            "status": recording_status,
+            "created_at": datetime.utcnow(),
+            "telnyx_created_at": payload.get("created_at"),
+            "channels": payload.get("channels"),
+            "format": "mp3" if "mp3" in recording_url else "wav",
+        }
+        
+        # Insert or update recording
+        recordings_collection.update_one(
+            {"call_id": internal_call_id},
+            {"$set": recording_doc},
+            upsert=True
+        )
+        
+        # Update call log with recording info
+        calls_collection.update_one(
+            {"call_id": internal_call_id},
+            {
+                "$set": {
+                    "recording_url": recording_url,
+                    "recording_size": recording_size,
+                    "recording_duration": recording_duration,
+                    "recording_id": recording_id,
+                    "has_recording": True,
+                    "recording_available": True,
+                    "recording_saved_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow(),
+                }
+            },
+        )
+        
+        logger.info(
+            f"💾 Recording saved: {internal_call_id} | "
+            f"Duration: {recording_duration}s | "
+            f"Size: {recording_size} bytes | "
+            f"URL: {recording_url[:50]}..."
+        )
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error processing recording: {str(e)}", exc_info=True)
+        return False
+
+
 @router.post("/call")
 async def handle_call_webhook(request: Request, background_tasks: BackgroundTasks):
     """
@@ -274,47 +372,14 @@ async def handle_call_webhook(request: Request, background_tasks: BackgroundTask
             logger.info(f"🤖 Machine detection: {internal_call_id} | Result: {detection_result}")
 
         elif event_type == "call.recording.saved":
-            # Handle recording URLs - prefer public URLs
-            recording_urls = payload.get("recording_urls", {})
-            public_recording_urls = payload.get("public_recording_urls", {})
-            
-            recording_url = (
-                public_recording_urls.get("mp3") or 
-                public_recording_urls.get("wav") or
-                recording_urls.get("mp3") or 
-                recording_urls.get("wav")
+            # Process recording in background to avoid blocking
+            background_tasks.add_task(
+                process_recording_saved,
+                internal_call_id,
+                telnyx_session_id,
+                payload,
+                call_doc
             )
-            
-            recording_size = payload.get("size", 0)
-            recording_duration = payload.get("duration_millis", 0) // 1000
-            
-            calls_collection.update_one(
-                {"call_id": internal_call_id},
-                {
-                    "$set": {
-                        "recording_url": recording_url,
-                        "recording_size": recording_size,
-                        "recording_duration": recording_duration,
-                        "has_recording": True,
-                        "recording_saved_at": datetime.utcnow(),
-                        "updated_at": datetime.utcnow(),
-                    }
-                },
-            )
-
-            # Store in recordings collection
-            recordings_collection = db_instance["recordings"]
-            recordings_collection.insert_one(
-                {
-                    "call_id": internal_call_id,
-                    "telnyx_session_id": telnyx_session_id,
-                    "url": recording_url,
-                    "size": recording_size,
-                    "duration": recording_duration,
-                    "created_at": datetime.utcnow(),
-                }
-            )
-            logger.info(f"💾 Recording saved: {internal_call_id} | Size: {recording_size} bytes")
 
         elif event_type == "call.recording.started":
             calls_collection.update_one(
@@ -389,6 +454,7 @@ async def webhook_stats():
     try:
         db_instance = db.get_db()
         webhooks_collection = db_instance["webhooks"]
+        recordings_collection = db_instance["recordings"]
         
         # Get webhook counts by event type
         pipeline = [
@@ -404,13 +470,43 @@ async def webhook_stats():
         
         stats = list(webhooks_collection.aggregate(pipeline))
         total_webhooks = webhooks_collection.count_documents({})
+        total_recordings = recordings_collection.count_documents({})
+        
+        # Get recording stats
+        recording_stats = recordings_collection.aggregate([
+            {
+                "$group": {
+                    "_id": None,
+                    "total_size": {"$sum": "$size"},
+                    "total_duration": {"$sum": "$duration"},
+                    "count": {"$sum": 1}
+                }
+            }
+        ])
+        
+        recording_data = list(recording_stats)
         
         return {
             "total_webhooks": total_webhooks,
             "by_event_type": stats,
+            "recordings": {
+                "total": total_recordings,
+                "total_size_bytes": recording_data[0]["total_size"] if recording_data else 0,
+                "total_duration_seconds": recording_data[0]["total_duration"] if recording_data else 0,
+            },
             "timestamp": datetime.utcnow().isoformat()
         }
         
     except Exception as e:
         logger.error(f"❌ Error fetching webhook stats: {str(e)}")
         return {"error": str(e)}
+
+
+@router.post("/test")
+async def test_webhook():
+    """Test endpoint to simulate webhook"""
+    return {
+        "status": "test_ok",
+        "message": "Webhook endpoint is working",
+        "timestamp": datetime.utcnow().isoformat()
+    }

@@ -25,12 +25,12 @@ logger = logging.getLogger(__name__)
 APP_NAME = os.getenv("APP_NAME", "Telnyx Calling System")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
-# CORS Configuration - Add your Vercel URL and custom domain
+# CORS Configuration
 CORS_ORIGINS = os.getenv(
     "CORS_ORIGINS",
     "http://localhost:3000,https://tri-markity-cloud-telephony.vercel.app,https://ctp.trimarkity.app"
 ).split(",")
-CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS]  # Clean whitespace
+CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS]
 
 # ----------------------------
 # WebSocket Manager
@@ -111,7 +111,7 @@ try:
         recordings,
     )
 
-    # ✅ FIXED - Proper prefixes for each router
+    # ✅ All routers with consistent prefix pattern
     app.include_router(contacts.router, prefix="/api/contacts", tags=["contacts"])
     app.include_router(calls.router, prefix="/api/calls", tags=["calls"])
     app.include_router(webrtc.router, prefix="/api/webrtc", tags=["webrtc"])
@@ -119,12 +119,16 @@ try:
     app.include_router(numbers.router, prefix="/api/numbers", tags=["numbers"])
     app.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
     app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
-    app.include_router(recordings.router, prefix="/api/recordings", tags=["recordings"])
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-    app.include_router(webhooks.router, prefix="", tags=["webhooks"])  # No prefix
+    
+    # ✅ FIXED: Add prefix here, recordings.py has NO prefix
+    app.include_router(recordings.router, prefix="/api/calls/recordings", tags=["recordings"])
+    
+    app.include_router(webhooks.router, prefix="", tags=["webhooks"])
     app.include_router(analytics_ws.router, tags=["analytics-ws"])
     
     logger.info("✅ Core routes loaded successfully")
+    logger.info(f"✅ Recordings router registered at: /api/calls/recordings")
 except ImportError as e:
     logger.warning(f"⚠️ Some core routes not available: {e}")
 except Exception as e:
@@ -200,18 +204,32 @@ async def root():
 
 @app.get("/api/status")
 async def api_status():
+    """API status and available endpoints"""
     return {
         "status": "online",
         "active_websockets": len(call_manager.active_connections),
         "endpoints": {
             "health": "/health",
             "docs": "/docs",
+            "redoc": "/redoc",
             "websocket": "/ws/calls",
-            "api": "/api",
+            "analytics_ws": "/ws/analytics",
+            "api": {
+                "contacts": "/api/contacts",
+                "calls": "/api/calls",
+                "recordings": "/api/calls/recordings/list",
+                "webrtc": "/api/webrtc",
+                "outbound": "/api/outbound",
+                "numbers": "/api/numbers",
+                "analytics": "/api/analytics",
+                "admin": "/api/admin",
+                "webhooks": "/api/webhooks/call",
+            }
         },
     }
 
 def get_call_manager():
+    """Get the global call manager instance"""
     return call_manager
 
 # ----------------------------

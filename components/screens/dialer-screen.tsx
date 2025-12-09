@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef, KeyboardEvent } from "react"
+import { useRouter } from "next/navigation"
 import {
   Phone,
   PhoneOff,
@@ -14,6 +15,7 @@ import {
   FileText,
   Download,
   Hash,
+  Disc3, // NEW: Recording icon
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useCallApi } from "@/hooks/use-call-api"
@@ -38,7 +40,6 @@ type DialerScreenProps = {
   onCallStateChange?: (state: CallState | null) => void
 }
 
-// Subset: fill this list with all countries from your data
 // Subset: fill this list with all countries from your data
 const countryCodes = [
   { country: "Afghanistan", code: "+93" },
@@ -70,12 +71,12 @@ const countryCodes = [
   { country: "Burkina Faso", code: "+226" },
   { country: "Burundi", code: "+257" },
   { country: "Cameroon", code: "+237" },
+  { country: "Canada", code: "+1" },
   { country: "Cape Verde", code: "+238" },
   { country: "Central African Republic", code: "+236" },
   { country: "Chad", code: "+235" },
   { country: "Chile", code: "+56" },
   { country: "China", code: "+86" },
-  { country: "Canada", code: "+1" },
   { country: "Colombia", code: "+57" },
   { country: "Comoros", code: "+269" },
   { country: "Cook Islands", code: "+682" },
@@ -234,7 +235,6 @@ const countryCodes = [
 ];
 
 
-
 function isE164(number: string) {
   return /^\+\d{10,15}$/.test(number)
 }
@@ -244,6 +244,8 @@ export function DialerScreen({
   demoMode = false,
   onCallStateChange,
 }: DialerScreenProps) {
+  const router = useRouter() // NEW: Router for navigation
+  
   const [selectedCountryCode, setSelectedCountryCode] = useState(countryCodes[0].code)
   const [localNumber, setLocalNumber] = useState("")
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
@@ -261,7 +263,7 @@ export function DialerScreen({
   const [webrtcError, setWebrtcError] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
 
-  // Recording URL state
+  // Recording URL state (kept for saved notes)
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null)
 
   // Keypad toggle state
@@ -279,7 +281,7 @@ export function DialerScreen({
     hangupCall,
     toggleMute,
     toggleSpeaker,
-    toggleRecording,
+    toggleRecording, // REMOVED: Not used anymore
     clearCall,
   } = useCallApi({ apiUrl })
 
@@ -370,51 +372,14 @@ export function DialerScreen({
     }
   }, [setCallState])
 
-  // Poll for recording status after call becomes active
-  useEffect(() => {
-    if (!callState || callState.status !== 'active') return
-    
-    let pollCount = 0
-    const maxPolls = 5
-    
-    const pollRecordingStatus = async () => {
-      try {
-        const response = await fetch(`${apiUrl}/api/webrtc/status/${callState.call_id}`)
-        if (response.ok) {
-          const data = await response.json()
-          
-          if (data.is_recording) {
-            console.log('🔴 Recording confirmed via polling')
-            setCallState(prev => prev ? { ...prev, isRecording: true } : prev)
-            return true
-          }
-        }
-      } catch (e) {
-        console.error('Recording status poll error:', e)
-      }
-      return false
-    }
-    
-    // Start polling 2 seconds after call becomes active
-    const pollInterval = setInterval(async () => {
-      pollCount++
-      const recordingActive = await pollRecordingStatus()
-      
-      if (recordingActive || pollCount >= maxPolls) {
-        clearInterval(pollInterval)
-      }
-    }, 2000)
-    
-    return () => clearInterval(pollInterval)
-  }, [callState?.status, callState?.call_id, apiUrl, setCallState])
+  // REMOVED: Poll for recording status (handled by recordings page)
 
-  // Fetch recording URL after call ends
+  // Fetch recording URL after call ends (kept for saved notes)
   useEffect(() => {
     if (!callState || callState.status !== 'ended' || !callState.call_id) return
     
     const fetchRecordingUrl = async () => {
       try {
-        // Wait a few seconds for recording to be saved
         await new Promise(resolve => setTimeout(resolve, 3000))
         
         const response = await fetch(`${apiUrl}/api/webrtc/status/${callState.call_id}`)
@@ -434,7 +399,7 @@ export function DialerScreen({
     fetchRecordingUrl()
   }, [callState?.status, callState?.call_id, apiUrl])
 
-  // WebSocket subscription with recording sync
+  // WebSocket subscription
   useEffect(() => {
     let isMounted = true
 
@@ -460,7 +425,6 @@ export function DialerScreen({
           }
         })
 
-        // Update recording URL if available
         if (data.recording_url) {
           setRecordingUrl(data.recording_url)
         }
@@ -546,13 +510,11 @@ export function DialerScreen({
     }
 
     try {
-      // Send via WebRTC (instant)
       if (currentWebRTCCall && typeof currentWebRTCCall.dtmf === 'function') {
         currentWebRTCCall.dtmf(digit)
         console.log(`🔊 Sent DTMF: ${digit}`)
       }
       
-      // Also send via API (backup)
       await fetch(`${apiUrl}/api/outbound/send-dtmf`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -733,18 +695,7 @@ export function DialerScreen({
     }
   }
 
-  const handleToggleRecording = async () => {
-    if (callState?.status !== "active") {
-      console.warn("⚠️ Recording only available when call is active")
-      return
-    }
-    
-    try {
-      await toggleRecording()
-    } catch (e) {
-      console.error("Failed to toggle recording:", e)
-    }
-  }
+  // REMOVED: handleToggleRecording function
 
   const handleToggleSpeaker = async () => {
     try {
@@ -1134,23 +1085,15 @@ export function DialerScreen({
                   <span className="text-[10px]">Speaker</span>
                 </Button>
 
-                {/* Record Indicator */}
-                <div
-                  className={`h-14 rounded-xl text-xs flex flex-col items-center justify-center gap-1 ${
-                    callState?.isRecording
-                      ? "border border-rose-400/70 bg-rose-500/20 text-rose-50"
-                      : "border border-white/10 bg-slate-900/60 text-slate-400 opacity-60"
-                  }`}
+                {/* NEW: Recordings Page Navigation Button */}
+                <Button
+                  onClick={() => router.push('/recordings')}
+                  variant="outline"
+                  className="h-14 rounded-xl text-xs flex flex-col items-center justify-center gap-1 border-white/10 bg-slate-900/60 text-slate-100 hover:border-purple-400/60 hover:bg-purple-500/10"
                 >
-                  <Circle
-                    className={`h-4 w-4 ${
-                      callState?.isRecording ? "fill-rose-500 animate-pulse" : ""
-                    }`}
-                  />
-                  <span className="text-[10px]">
-                    {callState?.isRecording ? "Rec" : "No Rec"}
-                  </span>
-                </div>
+                  <Disc3 className="h-5 w-5" />
+                  <span className="text-[10px]">Recordings</span>
+                </Button>
 
                 {/* Keypad Button */}
                 <Button

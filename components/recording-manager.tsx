@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useCallback, useEffect, useRef } from "react"
-import { Download, Trash2, Play, Pause, RefreshCw, Loader2, Volume2, Calendar, Clock, HardDrive, AlertCircle } from "lucide-react"
+import { Download, Trash2, Play, Pause, RefreshCw, Loader2, Volume2, Calendar, Clock, HardDrive, AlertCircle, Circle } from "lucide-react"
 import { useApiConfig } from "@/hooks/use-api-config"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -18,6 +18,7 @@ interface Recording {
   status?: string
   _id?: string
   recording_id?: string
+  is_active?: boolean // NEW: Track active recordings
 }
 
 interface RecordingManagerProps {
@@ -27,6 +28,7 @@ interface RecordingManagerProps {
 export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
   const { apiUrl } = useApiConfig()
   const [recordings, setRecordings] = useState<Recording[]>([])
+  const [activeRecordings, setActiveRecordings] = useState<Recording[]>([]) // NEW
   const [loading, setLoading] = useState(false)
   const [playingId, setPlayingId] = useState<string | null>(null)
   const [totalSize, setTotalSize] = useState(0)
@@ -58,10 +60,35 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         try {
           const data = JSON.parse(event.data)
           
+          // Handle recording started
+          if (data.type === 'recording_started') {
+            console.log('🔴 Recording started:', data.call_id)
+            setActiveRecordings(prev => [
+              ...prev,
+              {
+                call_id: data.call_id,
+                to_number: data.to_number || 'Unknown',
+                from_number: data.from_number || 'Unknown',
+                duration: 0,
+                created_at: new Date().toISOString(),
+                url: '',
+                size: 0,
+                is_active: true
+              }
+            ])
+          }
+          
+          // Handle recording stopped
+          if (data.type === 'recording_stopped') {
+            console.log('⏹️ Recording stopped:', data.call_id)
+            setActiveRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
+            fetchRecordings() // Refresh completed recordings
+          }
+          
           // Handle recording added
           if (data.type === 'recording_added') {
             console.log('🎙️ New recording added:', data.call_id)
-            fetchRecordings() // Refresh list
+            fetchRecordings()
           }
           
           // Handle recording deleted
@@ -69,7 +96,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
             console.log('🗑️ Recording deleted:', data.call_id)
             setRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
             
-            // Stop playback if deleted recording is playing
             if (playingId === data.call_id && audioRef.current) {
               audioRef.current.pause()
               setPlayingId(null)
@@ -89,7 +115,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         console.log('📡 WebSocket disconnected')
         setWsConnected(false)
         
-        // Reconnect after 3 seconds
         setTimeout(() => {
           console.log('🔄 Attempting to reconnect WebSocket...')
           connectWebSocket()
@@ -119,7 +144,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
     fetchRecordings()
   }, [])
 
-  // Initialize audio element with proper event listeners
+  // Initialize audio element
   useEffect(() => {
     if (!audioRef.current) {
       const audio = new Audio()
@@ -191,26 +216,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
             size: 2048000,
             created_at: new Date(Date.now() - 86400000).toISOString(),
             to_number: "+12125551001",
-            from_number: "+12125551234",
-            status: "completed",
-          },
-          {
-            call_id: "demo-002",
-            duration: 230,
-            url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
-            size: 3276800,
-            created_at: new Date(Date.now() - 172800000).toISOString(),
-            to_number: "+12125551002",
-            from_number: "+12125551234",
-            status: "completed",
-          },
-          {
-            call_id: "demo-003",
-            duration: 180,
-            url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
-            size: 2621440,
-            created_at: new Date(Date.now() - 259200000).toISOString(),
-            to_number: "+12125551003",
             from_number: "+12125551234",
             status: "completed",
           },
@@ -418,6 +423,23 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
           </Button>
         </div>
       </Card>
+
+      {/* Active Recordings Banner */}
+      {activeRecordings.length > 0 && (
+        <Card className="p-4 bg-rose-500/10 border-rose-500/30 animate-pulse">
+          <div className="flex items-center gap-3">
+            <Circle className="w-4 h-4 fill-rose-500 text-rose-500 animate-pulse" />
+            <div>
+              <p className="text-sm font-semibold text-rose-600 dark:text-rose-400">
+                {activeRecordings.length} Active Recording{activeRecordings.length > 1 ? 's' : ''}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {activeRecordings.map(r => r.to_number).join(', ')}
+              </p>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* Demo Mode Banner */}
       {demoMode && (

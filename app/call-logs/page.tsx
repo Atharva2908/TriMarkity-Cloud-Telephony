@@ -2,8 +2,21 @@
 
 import { useEffect, useState } from "react"
 import { Navigation } from "@/components/navigation"
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts"
-import { Edit, Trash2, Download } from "lucide-react"
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer, 
+  PieChart, 
+  Pie, 
+  Cell,
+  Legend
+} from "recharts"
+import { Edit, Trash2, Download, RefreshCw, Save, X } from "lucide-react"
+import { useApiConfig } from "@/hooks/use-api-config"
 
 const DEMO_LOGS = [
   {
@@ -41,6 +54,7 @@ const DEMO_LOGS = [
     disposition: "completed",
     notes: "Scheduled demo for next week",
     tags: ["demo", "scheduled"],
+    recording_url: "https://example.com/recording3.wav",
     created_at: new Date().toISOString(),
   },
   {
@@ -79,13 +93,28 @@ interface EditingLog {
 }
 
 export default function CallLogsPage() {
-  const [logs, setLogs] = useState<CallLog[]>(DEMO_LOGS)
+  const { apiUrl } = useApiConfig()
+  const [logs, setLogs] = useState<CallLog[]>([])
   const [loading, setLoading] = useState(true)
-  const [stats, setStats] = useState({ total: 0, completed: 0, failed: 0, busy: 0, noAnswer: 0 })
-  const [useDemo, setUseDemo] = useState(true)
+  const [stats, setStats] = useState({ 
+    total: 0, 
+    completed: 0, 
+    failed: 0, 
+    busy: 0, 
+    noAnswer: 0,
+    totalDuration: 0,
+    avgDuration: 0
+  })
+  const [useDemo, setUseDemo] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editForm, setEditForm] = useState<EditingLog>({ _id: "", notes: "", disposition: "", tags: "" })
+  const [editForm, setEditForm] = useState<EditingLog>({ 
+    _id: "", 
+    notes: "", 
+    disposition: "", 
+    tags: "" 
+  })
   const [filterDisposition, setFilterDisposition] = useState<string>("all")
+  const [isRefreshing, setIsRefreshing] = useState(false)
 
   useEffect(() => {
     fetchCallLogs()
@@ -94,13 +123,12 @@ export default function CallLogsPage() {
   const fetchCallLogs = async () => {
     try {
       setLoading(true)
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
-      const response = await fetch(`${apiUrl}/api/calls/logs`)
+      const response = await fetch(`${apiUrl}/api/webrtc/logs`)
 
       if (!response.ok) throw new Error("API not available")
 
       const data = await response.json()
-      const callLogs = data.logs || DEMO_LOGS
+      const callLogs = data.logs || data || []
       setLogs(callLogs)
       setUseDemo(false)
       calculateStats(callLogs)
@@ -115,14 +143,31 @@ export default function CallLogsPage() {
   }
 
   const calculateStats = (callLogs: CallLog[]) => {
-    const stats = {
+    const completed = callLogs.filter((log) => 
+      log.disposition === "completed" || log.status === "ended"
+    ).length
+    const failed = callLogs.filter((log) => log.disposition === "failed").length
+    const busy = callLogs.filter((log) => log.disposition === "busy").length
+    const noAnswer = callLogs.filter((log) => log.disposition === "no_answer").length
+    
+    const totalDuration = callLogs.reduce((sum, log) => sum + (log.duration || 0), 0)
+    const avgDuration = completed > 0 ? Math.floor(totalDuration / completed) : 0
+
+    setStats({
       total: callLogs.length,
-      completed: callLogs.filter((log) => log.disposition === "completed").length,
-      failed: callLogs.filter((log) => log.disposition === "failed").length,
-      busy: callLogs.filter((log) => log.disposition === "busy").length,
-      noAnswer: callLogs.filter((log) => log.disposition === "no_answer").length,
-    }
-    setStats(stats)
+      completed,
+      failed,
+      busy,
+      noAnswer,
+      totalDuration,
+      avgDuration
+    })
+  }
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true)
+    await fetchCallLogs()
+    setTimeout(() => setIsRefreshing(false), 500)
   }
 
   const startEditing = (log: CallLog) => {
@@ -135,10 +180,14 @@ export default function CallLogsPage() {
     })
   }
 
+  const cancelEdit = () => {
+    setEditingId(null)
+    setEditForm({ _id: "", notes: "", disposition: "", tags: "" })
+  }
+
   const saveEdit = async (logId: string) => {
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
-      const response = await fetch(`${apiUrl}/api/calls/${logId}/log`, {
+      const response = await fetch(`${apiUrl}/api/webrtc/logs/${logId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -163,7 +212,25 @@ export default function CallLogsPage() {
                   .map((t) => t.trim())
                   .filter((t) => t),
               }
-            : log,
+            : log
+        )
+        setLogs(updatedLogs)
+        calculateStats(updatedLogs)
+        setEditingId(null)
+      } else {
+        // Demo mode fallback
+        const updatedLogs = logs.map((log) =>
+          log._id === logId
+            ? {
+                ...log,
+                notes: editForm.notes,
+                disposition: editForm.disposition,
+                tags: editForm.tags
+                  .split(",")
+                  .map((t) => t.trim())
+                  .filter((t) => t),
+              }
+            : log
         )
         setLogs(updatedLogs)
         calculateStats(updatedLogs)
@@ -171,23 +238,87 @@ export default function CallLogsPage() {
       }
     } catch (error) {
       console.error("Error saving call log:", error)
+      // Demo mode fallback
+      const updatedLogs = logs.map((log) =>
+        log._id === logId
+          ? {
+              ...log,
+              notes: editForm.notes,
+              disposition: editForm.disposition,
+              tags: editForm.tags
+                .split(",")
+                .map((t) => t.trim())
+                .filter((t) => t),
+            }
+          : log
+      )
+      setLogs(updatedLogs)
+      calculateStats(updatedLogs)
+      setEditingId(null)
     }
   }
 
-  const deleteLog = (logId: string) => {
-    const updatedLogs = logs.filter((log) => log._id !== logId)
-    setLogs(updatedLogs)
-    calculateStats(updatedLogs)
+  const deleteLog = async (logId: string) => {
+    if (!confirm("Are you sure you want to delete this call log?")) return
+
+    try {
+      const response = await fetch(`${apiUrl}/api/webrtc/logs/${logId}`, {
+        method: "DELETE",
+      })
+
+      if (response.ok || useDemo) {
+        const updatedLogs = logs.filter((log) => log._id !== logId)
+        setLogs(updatedLogs)
+        calculateStats(updatedLogs)
+      }
+    } catch (error) {
+      console.error("Error deleting log:", error)
+      // Demo mode fallback
+      const updatedLogs = logs.filter((log) => log._id !== logId)
+      setLogs(updatedLogs)
+      calculateStats(updatedLogs)
+    }
   }
 
-  const filteredLogs = filterDisposition === "all" ? logs : logs.filter((log) => log.disposition === filterDisposition)
+  const filteredLogs = filterDisposition === "all" 
+    ? logs 
+    : logs.filter((log) => log.disposition === filterDisposition)
 
   const dispositionData = [
-    { name: "Completed", value: stats.completed },
-    { name: "Failed", value: stats.failed },
-    { name: "Busy", value: stats.busy },
-    { name: "No Answer", value: stats.noAnswer },
-  ]
+    { name: "Completed", value: stats.completed, color: "#10b981" },
+    { name: "Failed", value: stats.failed, color: "#ef4444" },
+    { name: "Busy", value: stats.busy, color: "#f59e0b" },
+    { name: "No Answer", value: stats.noAnswer, color: "#3b82f6" },
+  ].filter(item => item.value > 0) // Only show non-zero values
+
+  // Duration data for bar chart (last 7 days)
+  const getDurationTrendData = () => {
+    const last7Days = Array.from({ length: 7 }, (_, i) => {
+      const date = new Date()
+      date.setDate(date.getDate() - (6 - i))
+      return date.toISOString().split('T')[0]
+    })
+
+    return last7Days.map(date => {
+      const dayLogs = logs.filter(log => 
+        log.created_at?.split('T')[0] === date
+      )
+      const totalDuration = dayLogs.reduce((sum, log) => sum + (log.duration || 0), 0)
+      return {
+        date: new Date(date).toLocaleDateString('en-US', { weekday: 'short' }),
+        duration: Math.floor(totalDuration / 60), // Convert to minutes
+        calls: dayLogs.length
+      }
+    })
+  }
+
+  const durationTrendData = getDurationTrendData()
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins}:${secs.toString().padStart(2, "0")}`
+  }
 
   const COLORS = ["#10b981", "#ef4444", "#f59e0b", "#3b82f6"]
 
@@ -195,85 +326,134 @@ export default function CallLogsPage() {
     <main className="min-h-screen bg-background text-foreground">
       <Navigation />
       <div className="container mx-auto px-4 py-8">
+        {/* Header with refresh */}
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h1 className="text-3xl font-bold">Call Logs & Analytics</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Track and analyze your call performance
+            </p>
+          </div>
+          <button
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+        </div>
+
         {useDemo && (
           <div className="mb-6 p-4 bg-ring/10 border border-ring rounded-lg text-sm">
-            <p className="font-medium text-ring">Demo Mode - Showing sample data</p>
+            <p className="font-medium text-ring">
+              📊 Demo Mode - Showing sample data. Connect to your backend to see real call logs.
+            </p>
           </div>
         )}
 
-        <h1 className="text-3xl font-bold mb-8">Call Logs & Analytics</h1>
-
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+        {/* Stats Cards */}
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-8">
           <div className="bg-card rounded-lg border border-border p-4">
-            <p className="text-xs text-muted-foreground uppercase">Total</p>
-            <p className="text-2xl font-bold text-accent">{stats.total}</p>
+            <p className="text-xs text-muted-foreground uppercase font-semibold">Total Calls</p>
+            <p className="text-2xl font-bold text-accent mt-1">{stats.total}</p>
           </div>
           <div className="bg-card rounded-lg border border-border p-4">
-            <p className="text-xs text-muted-foreground uppercase">Completed</p>
-            <p className="text-2xl font-bold text-green-500">{stats.completed}</p>
+            <p className="text-xs text-muted-foreground uppercase font-semibold">Completed</p>
+            <p className="text-2xl font-bold text-green-500 mt-1">{stats.completed}</p>
           </div>
           <div className="bg-card rounded-lg border border-border p-4">
-            <p className="text-xs text-muted-foreground uppercase">Failed</p>
-            <p className="text-2xl font-bold text-destructive">{stats.failed}</p>
+            <p className="text-xs text-muted-foreground uppercase font-semibold">Failed</p>
+            <p className="text-2xl font-bold text-destructive mt-1">{stats.failed}</p>
           </div>
           <div className="bg-card rounded-lg border border-border p-4">
-            <p className="text-xs text-muted-foreground uppercase">Busy</p>
-            <p className="text-2xl font-bold text-yellow-500">{stats.busy}</p>
+            <p className="text-xs text-muted-foreground uppercase font-semibold">Busy</p>
+            <p className="text-2xl font-bold text-yellow-500 mt-1">{stats.busy}</p>
           </div>
           <div className="bg-card rounded-lg border border-border p-4">
-            <p className="text-xs text-muted-foreground uppercase">No Answer</p>
-            <p className="text-2xl font-bold text-ring">{stats.noAnswer}</p>
+            <p className="text-xs text-muted-foreground uppercase font-semibold">No Answer</p>
+            <p className="text-2xl font-bold text-ring mt-1">{stats.noAnswer}</p>
+          </div>
+          <div className="bg-card rounded-lg border border-border p-4">
+            <p className="text-xs text-muted-foreground uppercase font-semibold">Avg Duration</p>
+            <p className="text-2xl font-bold text-primary mt-1">{formatDuration(stats.avgDuration)}</p>
           </div>
         </div>
 
+        {/* Charts */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-          <div className="bg-card rounded-lg border border-border p-4">
-            <h2 className="font-bold mb-4">Disposition Breakdown</h2>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={dispositionData}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ name, value }) => `${name}: ${value}`}
-                  outerRadius={80}
-                  fill="#8884d8"
-                  dataKey="value"
-                >
-                  {COLORS.map((color) => (
-                    <Cell key={`cell-${color}`} fill={color} />
-                  ))}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
+          {/* Pie Chart */}
+          <div className="bg-card rounded-lg border border-border p-6">
+            <h2 className="font-bold text-lg mb-4">Disposition Breakdown</h2>
+            {dispositionData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={dispositionData}
+                    cx="50%"
+                    cy="50%"
+                    labelLine={false}
+                    label={({ name, value, percent }) => 
+                      `${name}: ${value} (${(percent * 100).toFixed(0)}%)`
+                    }
+                    outerRadius={100}
+                    fill="#8884d8"
+                    dataKey="value"
+                  >
+                    {dispositionData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-[300px] flex items-center justify-center text-muted-foreground">
+                No data available
+              </div>
+            )}
           </div>
 
-          <div className="bg-card rounded-lg border border-border p-4">
-            <h2 className="font-bold mb-4">Call Duration Trend</h2>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={dispositionData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="value" fill="#3b82f6" />
-              </BarChart>
-            </ResponsiveContainer>
+          {/* Bar Chart */}
+          <div className="bg-card rounded-lg border border-border p-6">
+            <h2 className="font-bold text-lg mb-4">Call Duration Trend (Last 7 Days)</h2>
+            {durationTrendData.some(d => d.calls > 0) ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={durationTrendData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                  <XAxis dataKey="date" stroke="#888" />
+                  <YAxis stroke="#888" label={{ value: 'Minutes', angle: -90, position: 'insideLeft' }} />
+                  <Tooltip 
+                    contentStyle={{ 
+                      backgroundColor: '#1a1a1a', 
+                      border: '1px solid #333',
+                      borderRadius: '8px'
+                    }}
+                    labelStyle={{ color: '#fff' }}
+                  />
+                  <Bar dataKey="duration" fill="#3b82f6" radius={[8, 8, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-[300px] flex items-center justify-center text-muted-foreground">
+                No call data for the past 7 days
+              </div>
+            )}
           </div>
         </div>
 
+        {/* Call Logs Table */}
         <div className="bg-card rounded-lg border border-border overflow-hidden">
-          <div className="p-4 border-b border-border flex gap-4 items-center justify-between">
-            <h2 className="font-bold">Recent Calls</h2>
-            <div className="flex gap-2">
+          <div className="p-4 border-b border-border flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
+            <h2 className="font-bold text-lg">Recent Calls</h2>
+            <div className="flex gap-2 w-full sm:w-auto">
               <select
                 value={filterDisposition}
                 onChange={(e) => setFilterDisposition(e.target.value)}
-                className="px-3 py-1 bg-input border border-border rounded text-sm"
+                className="flex-1 sm:flex-initial px-3 py-2 bg-input border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
               >
-                <option value="all">All</option>
+                <option value="all">All Dispositions</option>
                 <option value="completed">Completed</option>
                 <option value="failed">Failed</option>
                 <option value="busy">Busy</option>
@@ -281,34 +461,45 @@ export default function CallLogsPage() {
               </select>
             </div>
           </div>
+          
           {loading ? (
-            <div className="p-8 text-center">Loading...</div>
+            <div className="p-8 text-center">
+              <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-primary" />
+              <p className="text-muted-foreground">Loading call logs...</p>
+            </div>
+          ) : filteredLogs.length === 0 ? (
+            <div className="p-8 text-center text-muted-foreground">
+              No call logs found
+            </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-input border-b border-border">
                   <tr>
-                    <th className="px-4 py-2 text-left">From</th>
-                    <th className="px-4 py-2 text-left">To</th>
-                    <th className="px-4 py-2 text-left">Duration</th>
-                    <th className="px-4 py-2 text-left">Disposition</th>
-                    <th className="px-4 py-2 text-left">Notes</th>
-                    <th className="px-4 py-2 text-left">Tags</th>
-                    <th className="px-4 py-2 text-left">Actions</th>
+                    <th className="px-4 py-3 text-left font-semibold">From</th>
+                    <th className="px-4 py-3 text-left font-semibold">To</th>
+                    <th className="px-4 py-3 text-left font-semibold">Duration</th>
+                    <th className="px-4 py-3 text-left font-semibold">Disposition</th>
+                    <th className="px-4 py-3 text-left font-semibold">Notes</th>
+                    <th className="px-4 py-3 text-left font-semibold">Tags</th>
+                    <th className="px-4 py-3 text-left font-semibold">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredLogs.map((log) => (
-                    <tr key={log._id} className="border-b border-border hover:bg-input transition-colors">
-                      <td className="px-4 py-2 font-mono text-xs">{log.from_number}</td>
-                      <td className="px-4 py-2 font-mono text-xs">{log.to_number}</td>
-                      <td className="px-4 py-2">{log.duration}s</td>
-                      <td className="px-4 py-2">
+                    <tr 
+                      key={log._id} 
+                      className="border-b border-border hover:bg-input/50 transition-colors"
+                    >
+                      <td className="px-4 py-3 font-mono text-xs">{log.from_number}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{log.to_number}</td>
+                      <td className="px-4 py-3 font-mono">{formatDuration(log.duration)}</td>
+                      <td className="px-4 py-3">
                         {editingId === log._id ? (
                           <select
                             value={editForm.disposition}
                             onChange={(e) => setEditForm({ ...editForm, disposition: e.target.value })}
-                            className="px-2 py-1 bg-input border border-border rounded text-xs"
+                            className="px-2 py-1 bg-input border border-border rounded text-xs w-full focus:outline-none focus:ring-2 focus:ring-primary"
                           >
                             <option value="completed">Completed</option>
                             <option value="failed">Failed</option>
@@ -317,7 +508,7 @@ export default function CallLogsPage() {
                           </select>
                         ) : (
                           <span
-                            className={`px-2 py-1 rounded text-xs font-medium ${
+                            className={`px-2 py-1 rounded text-xs font-medium inline-block ${
                               log.disposition === "completed"
                                 ? "bg-green-500/20 text-green-500"
                                 : log.disposition === "failed"
@@ -331,67 +522,76 @@ export default function CallLogsPage() {
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-2 text-xs max-w-xs truncate">
+                      <td className="px-4 py-3 text-xs max-w-xs">
                         {editingId === log._id ? (
                           <input
                             type="text"
                             value={editForm.notes}
                             onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
-                            className="w-full px-2 py-1 bg-input border border-border rounded text-xs"
-                            placeholder="Notes"
+                            className="w-full px-2 py-1 bg-input border border-border rounded text-xs focus:outline-none focus:ring-2 focus:ring-primary"
+                            placeholder="Add notes..."
                           />
                         ) : (
-                          log.notes || "-"
+                          <span className="line-clamp-2">{log.notes || "-"}</span>
                         )}
                       </td>
-                      <td className="px-4 py-2 text-xs">
+                      <td className="px-4 py-3 text-xs">
                         {editingId === log._id ? (
                           <input
                             type="text"
                             value={editForm.tags}
                             onChange={(e) => setEditForm({ ...editForm, tags: e.target.value })}
-                            className="w-full px-2 py-1 bg-input border border-border rounded text-xs"
-                            placeholder="Tags (comma-separated)"
+                            className="w-full px-2 py-1 bg-input border border-border rounded text-xs focus:outline-none focus:ring-2 focus:ring-primary"
+                            placeholder="tag1, tag2"
                           />
                         ) : (
                           <div className="flex gap-1 flex-wrap">
-                            {log.tags?.map((tag) => (
-                              <span key={tag} className="bg-ring/20 text-ring px-1.5 py-0.5 rounded text-xs">
-                                {tag}
-                              </span>
-                            )) || "-"}
+                            {log.tags && log.tags.length > 0 ? (
+                              log.tags.map((tag) => (
+                                <span 
+                                  key={tag} 
+                                  className="bg-ring/20 text-ring px-1.5 py-0.5 rounded text-xs"
+                                >
+                                  {tag}
+                                </span>
+                              ))
+                            ) : (
+                              "-"
+                            )}
                           </div>
                         )}
                       </td>
-                      <td className="px-4 py-2 text-xs">
-                        <div className="flex gap-2 items-center">
+                      <td className="px-4 py-3">
+                        <div className="flex gap-1 items-center">
                           {editingId === log._id ? (
                             <>
                               <button
                                 onClick={() => saveEdit(log._id)}
-                                className="px-2 py-1 bg-accent text-accent-foreground rounded text-xs hover:opacity-80"
+                                className="p-1.5 bg-accent text-accent-foreground rounded hover:opacity-80 transition-opacity"
+                                title="Save changes"
                               >
-                                Save
+                                <Save className="w-4 h-4" />
                               </button>
                               <button
-                                onClick={() => setEditingId(null)}
-                                className="px-2 py-1 bg-input border border-border rounded text-xs hover:bg-muted"
+                                onClick={cancelEdit}
+                                className="p-1.5 bg-input border border-border rounded hover:bg-muted transition-colors"
+                                title="Cancel"
                               >
-                                Cancel
+                                <X className="w-4 h-4" />
                               </button>
                             </>
                           ) : (
                             <>
                               <button
                                 onClick={() => startEditing(log)}
-                                className="p-1 hover:bg-input rounded"
+                                className="p-1.5 hover:bg-input rounded transition-colors"
                                 title="Edit"
                               >
                                 <Edit className="w-4 h-4" />
                               </button>
                               <button
                                 onClick={() => deleteLog(log._id)}
-                                className="p-1 hover:bg-destructive/10 rounded"
+                                className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
                                 title="Delete"
                               >
                                 <Trash2 className="w-4 h-4 text-destructive" />
@@ -399,12 +599,12 @@ export default function CallLogsPage() {
                               {log.recording_url && (
                                 <a
                                   href={log.recording_url}
-                                  className="p-1 hover:bg-input rounded"
+                                  className="p-1.5 hover:bg-input rounded transition-colors"
                                   title="Download Recording"
                                   target="_blank"
                                   rel="noopener noreferrer"
                                 >
-                                  <Download className="w-4 h-4" />
+                                  <Download className="w-4 h-4 text-primary" />
                                 </a>
                               )}
                             </>
@@ -415,6 +615,13 @@ export default function CallLogsPage() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+          
+          {/* Results count */}
+          {!loading && filteredLogs.length > 0 && (
+            <div className="p-3 text-center text-xs text-muted-foreground border-t border-border">
+              Showing {filteredLogs.length} of {logs.length} calls
             </div>
           )}
         </div>

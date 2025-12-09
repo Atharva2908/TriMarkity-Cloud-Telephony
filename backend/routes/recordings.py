@@ -244,7 +244,7 @@ async def upload_recording(call_id: str, file: UploadFile = File(...)):
 
 @router.get("/download/{call_id}")
 async def download_recording(call_id: str):
-    """Download or redirect to recording file"""
+    """Download or serve recording file"""
     try:
         recordings_collection = db.get_db()["recordings"]
         recording = recordings_collection.find_one({"call_id": call_id})
@@ -252,20 +252,23 @@ async def download_recording(call_id: str):
         if not recording:
             raise HTTPException(status_code=404, detail="Recording not found")
         
-        recording_url = recording.get("url", "")
+        # Check if we have a local file
+        file_path = recording.get("file_path")
+        if file_path and os.path.exists(file_path):
+            logger.info(f"📁 Serving local file for call {call_id}")
+            return FileResponse(
+                path=file_path,
+                media_type="audio/mpeg",
+                filename=f"recording-{call_id}.mp3"
+            )
         
-        # If URL is external (Telnyx storage), redirect to it
+        # Fallback to external URL (will likely be expired)
+        recording_url = recording.get("url", "")
         if recording_url.startswith("http://") or recording_url.startswith("https://"):
-            logger.info(f"🔗 Redirecting to external URL for call {call_id}")
+            logger.warning(f"⚠️ Redirecting to external URL (may be expired) for call {call_id}")
             return RedirectResponse(url=recording_url)
         
-        # Otherwise, implement local file serving here
-        return {
-            "message": "Download endpoint",
-            "call_id": call_id,
-            "url": recording_url,
-            "note": "If recording is on Telnyx, use the URL directly from /list endpoint"
-        }
+        raise HTTPException(status_code=404, detail="Recording file not found")
     except HTTPException:
         raise
     except Exception as e:

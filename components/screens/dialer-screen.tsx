@@ -12,6 +12,7 @@ import {
   Circle,
   RotateCcw,
   FileText,
+  Download,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useCallApi } from "@/hooks/use-call-api"
@@ -256,13 +257,16 @@ export function DialerScreen({
 
   const [callNotes, setCallNotes] = useState("")
   const [savedNotes, setSavedNotes] = useState<
-    { callId: string; to: string; notes: string; timestamp: string }[]
+    { callId: string; to: string; notes: string; timestamp: string; recordingUrl?: string }[]
   >([])
 
   // WebRTC specific states
   const [webrtcReady, setWebrtcReady] = useState(false)
   const [webrtcError, setWebrtcError] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
+
+  // Recording URL state
+  const [recordingUrl, setRecordingUrl] = useState<string | null>(null)
 
   // Use API config hook
   const { apiUrl } = useApiConfig()
@@ -299,7 +303,6 @@ export function DialerScreen({
       })
 
       telnyxClient.on('telnyx.error', (error: any) => {
-        // Suppress normal disconnect/bye errors
         const errorMsg = error?.message || JSON.stringify(error)
         if (errorMsg.includes('bye') || errorMsg.includes('failed!') || errorMsg === '{}') {
           console.log('ℹ️ Normal call disconnect (bye)')
@@ -318,16 +321,12 @@ export function DialerScreen({
           const call = notification.call
           currentWebRTCCall = call
 
-          // Attach remote audio stream to <audio> element and force play
           if (call.remoteStream && audioRef.current) {
-            // Only update if it's a different stream
             if (audioRef.current.srcObject !== call.remoteStream) {
               audioRef.current.srcObject = call.remoteStream
               
-              // Force play the audio (required for browser autoplay policies)
               audioRef.current.play().catch((err) => {
                 console.error('❌ Audio play error:', err)
-                // Try to play again after user interaction
                 const playAudio = () => {
                   audioRef.current?.play()
                   document.removeEventListener('click', playAudio)
@@ -339,7 +338,6 @@ export function DialerScreen({
             }
           }
 
-          // Sync WebRTC call state with UI
           if (call.state === 'new') {
             console.log('📱 WebRTC Call: new (incoming to browser)')
           } else if (call.state === 'trying') {
@@ -355,7 +353,6 @@ export function DialerScreen({
             setCallState(prev => prev ? { ...prev, status: 'ended' } : prev)
             currentWebRTCCall = null
             
-            // Clear audio stream safely
             if (audioRef.current && audioRef.current.srcObject) {
               audioRef.current.srcObject = null
             }
@@ -374,7 +371,71 @@ export function DialerScreen({
     }
   }, [setCallState])
 
-  // WebSocket subscription
+  // Poll for recording status after call becomes active
+  useEffect(() => {
+    if (!callState || callState.status !== 'active') return
+    
+    let pollCount = 0
+    const maxPolls = 5
+    
+    const pollRecordingStatus = async () => {
+      try {
+        const response = await fetch(`${apiUrl}/api/webrtc/status/${callState.call_id}`)
+        if (response.ok) {
+          const data = await response.json()
+          
+          if (data.is_recording) {
+            console.log('🔴 Recording confirmed via polling')
+            setCallState(prev => prev ? { ...prev, isRecording: true } : prev)
+            return true
+          }
+        }
+      } catch (e) {
+        console.error('Recording status poll error:', e)
+      }
+      return false
+    }
+    
+    // Start polling 2 seconds after call becomes active
+    const pollInterval = setInterval(async () => {
+      pollCount++
+      const recordingActive = await pollRecordingStatus()
+      
+      if (recordingActive || pollCount >= maxPolls) {
+        clearInterval(pollInterval)
+      }
+    }, 2000)
+    
+    return () => clearInterval(pollInterval)
+  }, [callState?.status, callState?.call_id, apiUrl, setCallState])
+
+  // Fetch recording URL after call ends
+  useEffect(() => {
+    if (!callState || callState.status !== 'ended' || !callState.call_id) return
+    
+    const fetchRecordingUrl = async () => {
+      try {
+        // Wait a few seconds for recording to be saved
+        await new Promise(resolve => setTimeout(resolve, 3000))
+        
+        const response = await fetch(`${apiUrl}/api/webrtc/status/${callState.call_id}`)
+        if (response.ok) {
+          const data = await response.json()
+          
+          if (data.recording_url) {
+            console.log('💾 Recording URL retrieved:', data.recording_url)
+            setRecordingUrl(data.recording_url)
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch recording URL:', e)
+      }
+    }
+    
+    fetchRecordingUrl()
+  }, [callState?.status, callState?.call_id, apiUrl])
+
+  // WebSocket subscription with recording sync
   useEffect(() => {
     let isMounted = true
 
@@ -396,8 +457,14 @@ export function DialerScreen({
             ...prev,
             status: nextStatus,
             duration: data.duration ?? prev.duration ?? 0,
+            isRecording: data.is_recording ?? prev.isRecording ?? false,
           }
         })
+
+        // Update recording URL if available
+        if (data.recording_url) {
+          setRecordingUrl(data.recording_url)
+        }
 
         if (
           rawStatus === "ended" ||
@@ -467,7 +534,6 @@ export function DialerScreen({
     if (localNumber.length < 15) {
       setLocalNumber((prev) => prev + digit)
     }
-    // Send DTMF if call is active
     if (isCallActive && currentWebRTCCall) {
       currentWebRTCCall.dtmf(digit)
     }
@@ -491,7 +557,6 @@ export function DialerScreen({
     }
 
     try {
-      // Step 1: Create backend PSTN call
       const response = await fetch(`${apiUrl}/api/webrtc/initiate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -509,7 +574,6 @@ export function DialerScreen({
       const data = await response.json()
       console.log('✅ PSTN call initiated:', data)
 
-      // Set initial state (dialing, no timer yet)
       setCallState({
         call_id: data.call_id,
         from_number: data.from,
@@ -522,7 +586,6 @@ export function DialerScreen({
         isRecording: false,
       })
 
-      // Step 2: Make WebRTC call from browser
       if (telnyxClient && currentWebRTCCall === null) {
         console.log('📞 Making WebRTC call from browser to:', fullDialedNumber)
         
@@ -537,6 +600,7 @@ export function DialerScreen({
       setLastDialedNumber(fullDialedNumber)
       setLastDialedContact(selectedContact ?? null)
       setCallNotes("")
+      setRecordingUrl(null)
     } catch (error) {
       console.error("[DialerScreen] Call initiation error:", error)
       setCallState({
@@ -556,7 +620,6 @@ export function DialerScreen({
 
   const handleEndCall = async () => {
     try {
-      // Step 1: Hangup WebRTC client side FIRST
       if (currentWebRTCCall) {
         try {
           currentWebRTCCall.hangup()
@@ -567,25 +630,24 @@ export function DialerScreen({
         currentWebRTCCall = null
       }
       
-      // Clear audio stream
       if (audioRef.current) {
         audioRef.current.pause()
         audioRef.current.srcObject = null
       }
       
-      // Step 2: Then hangup backend call
       await hangupCall()
       
     } catch (e) {
       console.error("Failed to hang up:", e)
     } finally {
-      if (callState && callNotes.trim()) {
+      if (callState && (callNotes.trim() || recordingUrl)) {
         setSavedNotes((prev) => [
           {
             callId: callState.call_id,
             to: fullDialedNumber,
             notes: callNotes.trim(),
             timestamp: new Date().toISOString(),
+            recordingUrl: recordingUrl || undefined,
           },
           ...prev,
         ])
@@ -595,6 +657,7 @@ export function DialerScreen({
       setLocalNumber("")
       setSelectedContact(null)
       setCallNotes("")
+      setRecordingUrl(null)
     }
   }
 
@@ -624,16 +687,13 @@ export function DialerScreen({
     try {
       await toggleMute()
       
-      // Toggle mute on WebRTC call using muteAudio/unmuteAudio
       if (currentWebRTCCall) {
         if (callState?.isMuted) {
-          // Unmute
           if (typeof currentWebRTCCall.unmuteAudio === 'function') {
             currentWebRTCCall.unmuteAudio()
             console.log('🎤 Audio unmuted')
           }
         } else {
-          // Mute
           if (typeof currentWebRTCCall.muteAudio === 'function') {
             currentWebRTCCall.muteAudio()
             console.log('🔇 Audio muted')
@@ -646,7 +706,6 @@ export function DialerScreen({
   }
 
   const handleToggleRecording = async () => {
-    // Only allow recording when call is active
     if (callState?.status !== "active") {
       console.warn("⚠️ Recording only available when call is active")
       return
@@ -841,6 +900,27 @@ export function DialerScreen({
           )}
         </div>
 
+        {/* Recording Available Banner */}
+        {callState?.status === 'ended' && recordingUrl && (
+          <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-4 py-3">
+            <div className="flex items-center gap-2">
+              <Circle className="h-3 w-3 fill-emerald-500 text-emerald-500" />
+              <span className="text-sm font-medium text-emerald-100">
+                Recording Available
+              </span>
+            </div>
+            <a
+              href={recordingUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 text-sm font-medium text-sky-300 hover:text-sky-200 transition-colors"
+            >
+              <Download className="h-4 w-4" />
+              Download
+            </a>
+          </div>
+        )}
+
         {/* Input row (only idle) */}
         {!isCallActive && (
           <div className="mb-5 flex flex-col gap-2 sm:flex-row">
@@ -1028,7 +1108,7 @@ export function DialerScreen({
                   </span>
                 </Button>
                 
-                {/* Recording Indicator (Read-only - auto-starts on answer) */}
+                {/* Recording Indicator (Auto-recording) */}
                 <div
                   className={`h-11 sm:h-12 rounded-2xl text-xs sm:text-sm flex items-center justify-center ${
                     callState?.isRecording
@@ -1117,6 +1197,21 @@ export function DialerScreen({
                     </span>
                   </div>
                   <p className="whitespace-pre-wrap text-slate-300">{entry.notes}</p>
+                  
+                  {/* Recording download link in saved notes */}
+                  {entry.recordingUrl && (
+                    <div className="mt-2 pt-2 border-t border-white/5">
+                      <a
+                        href={entry.recordingUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 text-[11px] text-sky-300 hover:text-sky-200 transition-colors"
+                      >
+                        <Download className="h-3 w-3" />
+                        Download Recording
+                      </a>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

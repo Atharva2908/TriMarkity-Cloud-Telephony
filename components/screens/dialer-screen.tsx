@@ -39,6 +39,7 @@ type DialerScreenProps = {
 }
 
 // Subset: fill this list with all countries from your data
+// Subset: fill this list with all countries from your data
 const countryCodes = [
   { country: "Afghanistan", code: "+93" },
   { country: "Albania", code: "+355" },
@@ -74,6 +75,7 @@ const countryCodes = [
   { country: "Chad", code: "+235" },
   { country: "Chile", code: "+56" },
   { country: "China", code: "+86" },
+  { country: "Canada", code: "+1" },
   { country: "Colombia", code: "+57" },
   { country: "Comoros", code: "+269" },
   { country: "Cook Islands", code: "+682" },
@@ -220,7 +222,7 @@ const countryCodes = [
   { country: "Uganda", code: "+256" },
   { country: "Ukraine", code: "+380" },
   { country: "United Kingdom", code: "+44" },
-  { country: "United States/Canada", code: "+1" },
+  { country: "United States", code: "+1" },
   { country: "Uruguay", code: "+598" },
   { country: "Uzbekistan", code: "+998" },
   { country: "Vanuatu", code: "+678" },
@@ -230,6 +232,7 @@ const countryCodes = [
   { country: "Zambia", code: "+260" },
   { country: "Zimbabwe", code: "+263" }
 ];
+
 
 
 function isE164(number: string) {

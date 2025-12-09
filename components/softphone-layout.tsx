@@ -1,12 +1,8 @@
 "use client"
 
 import { useState } from "react"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DialerScreen } from "./screens/dialer-screen"
-import { ContactsScreen } from "./screens/contacts-screen"
-import { CallLogsScreen } from "./screens/call-logs-screen"
-import { SettingsScreen } from "./screens/settings-screen"
-import { Phone, Users, Clock, Settings } from "lucide-react"
+import { Phone } from "lucide-react"
 
 interface SoftphoneLayoutProps {
   contacts: any[]
@@ -14,7 +10,6 @@ interface SoftphoneLayoutProps {
 }
 
 export function SoftphoneLayout({ contacts, demoMode }: SoftphoneLayoutProps) {
-  const [activeTab, setActiveTab] = useState("dialer")
   const [currentCall, setCurrentCall] = useState(null)
 
   return (
@@ -23,57 +18,21 @@ export function SoftphoneLayout({ contacts, demoMode }: SoftphoneLayoutProps) {
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           <div className="lg:col-span-3">
             <div className="bg-card/50 backdrop-blur border border-border rounded-2xl overflow-hidden shadow-xl">
-              {/* Wrap everything in a single Tabs component */}
-              <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-                <TabsList className="w-full grid grid-cols-4 gap-1 p-2 bg-secondary/50 border-b border-border rounded-none">
-                  <TabsTrigger
-                    value="dialer"
-                    className="flex gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground rounded-lg"
-                  >
-                    <Phone className="w-4 h-4" />
-                    <span className="hidden sm:inline">Dialer</span>
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="contacts"
-                    className="flex gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground rounded-lg"
-                  >
-                    <Users className="w-4 h-4" />
-                    <span className="hidden sm:inline">Contacts</span>
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="logs"
-                    className="flex gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground rounded-lg"
-                  >
-                    <Clock className="w-4 h-4" />
-                    <span className="hidden sm:inline">Logs</span>
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="settings"
-                    className="flex gap-2 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground rounded-lg"
-                  >
-                    <Settings className="w-4 h-4" />
-                    <span className="hidden sm:inline">Settings</span>
-                  </TabsTrigger>
-                </TabsList>
-
-                <div className="p-6">
-                  <TabsContent value="dialer" className="mt-0">
-                    <DialerScreen contacts={contacts} demoMode={demoMode} onCallStateChange={setCurrentCall} />
-                  </TabsContent>
-
-                  <TabsContent value="contacts" className="mt-0">
-                    <ContactsScreen contacts={contacts} />
-                  </TabsContent>
-
-                  <TabsContent value="logs" className="mt-0">
-                    <CallLogsScreen />
-                  </TabsContent>
-
-                  <TabsContent value="settings" className="mt-0">
-                    <SettingsScreen />
-                  </TabsContent>
+              {/* Simple header instead of tabs */}
+              <div className="w-full p-4 bg-secondary/50 border-b border-border">
+                <div className="flex items-center gap-2 text-primary font-semibold">
+                  <Phone className="w-5 h-5" />
+                  <span>Dialer</span>
                 </div>
-              </Tabs>
+              </div>
+
+              <div className="p-6">
+                <DialerScreen 
+                  contacts={contacts} 
+                  demoMode={demoMode} 
+                  onCallStateChange={setCurrentCall} 
+                />
+              </div>
             </div>
           </div>
 

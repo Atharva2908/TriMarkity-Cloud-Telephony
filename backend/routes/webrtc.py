@@ -5,6 +5,7 @@ Handles WebRTC + PSTN call bridging for browser audio + API endpoints for call l
 
 import os
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from database import db
 from pydantic import BaseModel
 from typing import List, Optional
@@ -247,12 +248,146 @@ async def delete_call_log(log_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
+# RECORDING ENDPOINTS
+# ============================================================================
+
+@router.get("/recordings/list")
+async def list_recordings():
+    """List all recordings for RecordingManager component"""
+    try:
+        recordings_collection = db.get_db()["recordings"]
+        
+        # Get all recordings sorted by most recent
+        recordings_cursor = recordings_collection.find().sort("created_at", -1)
+        recordings = list(recordings_cursor)
+        
+        # Convert ObjectId and datetime to strings
+        for rec in recordings:
+            rec["_id"] = str(rec["_id"])
+            if "created_at" in rec and rec["created_at"]:
+                rec["created_at"] = rec["created_at"].isoformat()
+        
+        logger.info(f"📼 Listed {len(recordings)} recordings")
+        
+        return {
+            "recordings": recordings,
+            "total": len(recordings)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error listing recordings: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/recordings/download/{call_id}")
+async def download_recording(call_id: str):
+    """Download recording with proper MIME type and CORS headers"""
+    try:
+        recordings_collection = db.get_db()["recordings"]
+        recording = recordings_collection.find_one({"call_id": call_id})
+        
+        if not recording:
+            logger.error(f"❌ Recording not found for call_id: {call_id}")
+            raise HTTPException(status_code=404, detail="Recording not found")
+        
+        recording_url = recording.get("url")
+        if not recording_url:
+            logger.error(f"❌ Recording URL not available for call_id: {call_id}")
+            raise HTTPException(status_code=404, detail="Recording URL not available")
+        
+        logger.info(f"📥 Fetching recording from Telnyx: {recording_url[:100]}...")
+        
+        # ✅ Fetch from Telnyx with proper timeout and redirect handling
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await client.get(recording_url)
+            response.raise_for_status()
+        
+        # ✅ Determine correct MIME type
+        format_type = recording.get("format", "mp3").lower()
+        content_type = "audio/mpeg" if format_type == "mp3" else "audio/wav"
+        
+        # ✅ Detect dual-channel for filename
+        channels = recording.get("channels", "single")
+        is_stereo = str(channels).lower() in ["dual", "2", "stereo"]
+        channel_suffix = "-stereo" if is_stereo else "-mono"
+        
+        filename = f"recording-{call_id}{channel_suffix}.{format_type}"
+        
+        logger.info(f"✅ Serving recording: {filename} ({content_type})")
+        
+        return Response(
+            content=response.content,
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Access-Control-Allow-Origin": "*",  # ✅ Adjust for production
+                "Access-Control-Expose-Headers": "Content-Disposition",
+                "Cache-Control": "public, max-age=3600"
+            }
+        )
+        
+    except httpx.HTTPError as e:
+        logger.error(f"❌ Error fetching recording from Telnyx: {str(e)}")
+        raise HTTPException(status_code=502, detail="Failed to fetch recording from storage")
+    except Exception as e:
+        logger.error(f"❌ Download error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/recordings/{call_id}/delete")
+async def delete_recording(call_id: str):
+    """Delete recording from database"""
+    try:
+        recordings_collection = db.get_db()["recordings"]
+        
+        # Find recording first
+        recording = recordings_collection.find_one({"call_id": call_id})
+        if not recording:
+            raise HTTPException(status_code=404, detail="Recording not found")
+        
+        # Delete from database
+        result = recordings_collection.delete_one({"call_id": call_id})
+        
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Recording not found")
+        
+        # Also update call log
+        calls_collection = db.get_db()["call_logs"]
+        calls_collection.update_one(
+            {"call_id": call_id},
+            {"$set": {
+                "has_recording": False,
+                "recording_url": None,
+                "recording_deleted_at": datetime.utcnow()
+            }}
+        )
+        
+        # Broadcast deletion
+        await manager.broadcast({
+            "type": "recording_deleted",
+            "call_id": call_id,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+        logger.info(f"🗑️ Deleted recording: {call_id}")
+        
+        return {
+            "success": True,
+            "call_id": call_id,
+            "message": "Recording deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Delete recording error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
 # WEBSOCKET ENDPOINT FOR REAL-TIME UPDATES
 # ============================================================================
 
-@router.websocket("/ws")
+@router.websocket("/ws/calls")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time call log updates"""
+    """WebSocket endpoint for real-time call and recording updates"""
     await manager.connect(websocket)
     try:
         while True:
@@ -399,9 +534,11 @@ async def telnyx_webhook(request: Request):
             
             # ✅ Validate dual-channel
             channels = event_payload.get("channels", "unknown")
+            expected_channels = "dual"
             if str(channels) not in ["dual", "2", "stereo"]:
-                logger.error(f"❌ EXPECTED DUAL CHANNEL, GOT: {channels}")
-                logger.error("   Check Telnyx Outbound Voice Profile settings!")
+                logger.error(f"❌ CHANNEL MISMATCH! Expected: {expected_channels}, Got: {channels}")
+                logger.error(f"   Check Telnyx Outbound Voice Profile: Connection ID {TELNYX_VOICE_CONNECTION_ID}")
+                logger.error("   Ensure 'Call Recording' is set to 'Dual Channel' and format is 'MP3'")
             else:
                 logger.info(f"✅ CONFIRMED: Dual-channel recording received!")
             
@@ -454,7 +591,7 @@ async def telnyx_webhook(request: Request):
                     }
                     
                     # Insert or update recording (upsert)
-                    recordings_collection.update_one(
+                    result = recordings_collection.update_one(
                         {"call_id": call_log["call_id"]},
                         {"$set": recording_data},
                         upsert=True
@@ -465,12 +602,21 @@ async def telnyx_webhook(request: Request):
                     logger.info(f"   Channels: {channels}")
                     logger.info(f"   URL: {recording_url[:100]}...")
                     
+                    # ✅ Get the inserted/updated document ID
+                    if result.upserted_id:
+                        recording_data["_id"] = str(result.upserted_id)
+                    else:
+                        # Fetch the document to get its _id
+                        saved_rec = recordings_collection.find_one({"call_id": call_log["call_id"]})
+                        if saved_rec:
+                            recording_data["_id"] = str(saved_rec["_id"])
+                    
                     # ✅ Broadcast recording_added event
                     await manager.broadcast({
                         "type": "recording_added",
                         "call_id": call_log["call_id"],
                         "recording": {
-                            "_id": str(recording_data.get("_id", "")),
+                            "_id": recording_data.get("_id", ""),
                             "call_id": call_log["call_id"],
                             "url": recording_url,
                             "duration": call_log.get("duration", 0),

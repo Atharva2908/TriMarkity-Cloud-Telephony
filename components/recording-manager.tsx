@@ -46,6 +46,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
   const progressBarRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const reconnectAttemptsRef = useRef<number>(0)
+  const isCleaningUpRef = useRef<boolean>(false)
 
   // ✅ Helper function to check if recording is dual-channel
   const isDualChannel = (channels: string | number | undefined): boolean => {
@@ -54,11 +56,13 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
     return channelStr === 'dual' || channelStr === '2' || channelStr === 'stereo'
   }
 
-  // ✅ WebSocket for real-time updates
+  // ✅ Enhanced WebSocket with exponential backoff reconnection
   useEffect(() => {
     if (demoMode) return
 
     const connectWebSocket = () => {
+      if (isCleaningUpRef.current) return
+
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
         reconnectTimeoutRef.current = null
@@ -76,6 +80,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
           console.log('📡 [RecordingManager] WebSocket connected')
           setWsConnected(true)
           setError(null)
+          reconnectAttemptsRef.current = 0 // Reset on successful connection
         }
 
         ws.onmessage = (event) => {
@@ -118,7 +123,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
             if (data.type === 'recording_added') {
               console.log('🎙️ New recording added:', data.call_id)
               
-              // Log recording details
               if (data.recording) {
                 console.log('   Format:', data.recording.format)
                 console.log('   Channels:', data.recording.channels)
@@ -157,10 +161,29 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
           console.log('📡 [RecordingManager] WebSocket disconnected', event.code, event.reason)
           setWsConnected(false)
 
-          reconnectTimeoutRef.current = setTimeout(() => {
-            console.log('🔄 Attempting to reconnect WebSocket...')
-            connectWebSocket()
-          }, 3000)
+          if (isCleaningUpRef.current) return
+
+          // ✅ Exponential backoff with max 30 seconds
+          const maxAttempts = 10
+          const baseDelay = 1000 // 1 second
+          const maxDelay = 30000 // 30 seconds
+
+          if (reconnectAttemptsRef.current < maxAttempts) {
+            const delay = Math.min(
+              baseDelay * Math.pow(2, reconnectAttemptsRef.current),
+              maxDelay
+            )
+            
+            reconnectAttemptsRef.current += 1
+            console.log(`🔄 Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${maxAttempts})`)
+
+            reconnectTimeoutRef.current = setTimeout(() => {
+              connectWebSocket()
+            }, delay)
+          } else {
+            console.error('❌ Max WebSocket reconnection attempts reached')
+            setError('Connection lost. Please refresh the page.')
+          }
         }
 
         wsRef.current = ws
@@ -178,6 +201,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
     connectWebSocket()
 
     return () => {
+      isCleaningUpRef.current = true
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
@@ -185,7 +209,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         wsRef.current.close()
       }
     }
-  }, [apiUrl, demoMode])
+  }, [apiUrl, demoMode, playingId])
 
   // Calculate total size
   useEffect(() => {
@@ -198,62 +222,104 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
     fetchRecordings()
   }, [])
 
-  // Initialize audio element
+  // ✅ Initialize audio element with proper error handling
   useEffect(() => {
-    if (!audioRef.current) {
-      const audio = new Audio()
+    const audio = new Audio()
 
-      const handleEnded = () => {
-        setPlayingId(null)
-        setCurrentTime(0)
-      }
-
-      const handleTimeUpdate = () => {
-        setCurrentTime(audio.currentTime)
-      }
-
-      const handleLoadedMetadata = () => {
-        setDuration(audio.duration)
-      }
-
-      const handleError = (e: Event) => {
-        console.error("Audio playback error:", e)
-        setAudioError("Failed to load audio. The recording may be unavailable.")
-        setPlayingId(null)
-      }
-
-      const handleLoadStart = () => {
-        setAudioError(null)
-      }
-
-      audio.addEventListener("ended", handleEnded)
-      audio.addEventListener("timeupdate", handleTimeUpdate)
-      audio.addEventListener("loadedmetadata", handleLoadedMetadata)
-      audio.addEventListener("error", handleError)
-      audio.addEventListener("loadstart", handleLoadStart)
-
-      audioRef.current = audio
-
-      return () => {
-        audio.removeEventListener("ended", handleEnded)
-        audio.removeEventListener("timeupdate", handleTimeUpdate)
-        audio.removeEventListener("loadedmetadata", handleLoadedMetadata)
-        audio.removeEventListener("error", handleError)
-        audio.removeEventListener("loadstart", handleLoadStart)
-        audio.pause()
-        audio.src = ""
-      }
+    const handleEnded = () => {
+      setPlayingId(null)
+      setCurrentTime(0)
     }
-  }, [])
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause()
-        audioRef.current.src = ""
-        audioRef.current = null
+    const handleTimeUpdate = () => {
+      setCurrentTime(audio.currentTime)
+    }
+
+    const handleLoadedMetadata = () => {
+      setDuration(audio.duration)
+      setAudioError(null)
+      console.log('✅ Audio metadata loaded:', audio.duration)
+    }
+
+    const handleCanPlay = () => {
+      console.log('✅ Audio can play')
+      setAudioError(null)
+    }
+
+    const handleError = (e: Event) => {
+      const target = e.target as HTMLAudioElement
+      const errorCode = target.error?.code
+      const errorMessage = target.error?.message
+      
+      console.error("❌ Audio playback error:", {
+        code: errorCode,
+        message: errorMessage,
+        src: target.src
+      })
+
+      // ✅ Provide specific error messages based on error code
+      let userMessage = "Failed to load audio. "
+      
+      switch (errorCode) {
+        case MediaError.MEDIA_ERR_ABORTED:
+          userMessage += "Playback was aborted."
+          break
+        case MediaError.MEDIA_ERR_NETWORK:
+          userMessage += "Network error occurred."
+          break
+        case MediaError.MEDIA_ERR_DECODE:
+          userMessage += "Audio format not supported."
+          break
+        case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+          userMessage += "Recording source not available."
+          break
+        default:
+          userMessage += "The recording may be unavailable."
       }
+
+      setAudioError(userMessage)
+      setPlayingId(null)
+    }
+
+    const handleLoadStart = () => {
+      setAudioError(null)
+      console.log('📥 Audio loading started...')
+    }
+
+    const handleStalled = () => {
+      console.warn('⚠️ Audio loading stalled')
+      setAudioError("Audio loading is slow. Please wait...")
+    }
+
+    const handleAbort = () => {
+      console.warn('⚠️ Audio loading aborted')
+    }
+
+    // Attach all event listeners
+    audio.addEventListener("ended", handleEnded)
+    audio.addEventListener("timeupdate", handleTimeUpdate)
+    audio.addEventListener("loadedmetadata", handleLoadedMetadata)
+    audio.addEventListener("canplay", handleCanPlay)
+    audio.addEventListener("error", handleError)
+    audio.addEventListener("loadstart", handleLoadStart)
+    audio.addEventListener("stalled", handleStalled)
+    audio.addEventListener("abort", handleAbort)
+
+    audioRef.current = audio
+
+    // ✅ Proper cleanup on unmount
+    return () => {
+      audio.pause()
+      audio.src = ""
+      audio.removeEventListener("ended", handleEnded)
+      audio.removeEventListener("timeupdate", handleTimeUpdate)
+      audio.removeEventListener("loadedmetadata", handleLoadedMetadata)
+      audio.removeEventListener("canplay", handleCanPlay)
+      audio.removeEventListener("error", handleError)
+      audio.removeEventListener("loadstart", handleLoadStart)
+      audio.removeEventListener("stalled", handleStalled)
+      audio.removeEventListener("abort", handleAbort)
+      audioRef.current = null
     }
   }, [])
 
@@ -286,7 +352,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         const recordingsList = Array.isArray(data.recordings) ? data.recordings : []
         const validRecordings = recordingsList.filter(rec => rec.url && rec.url.trim() !== '')
 
-        // ✅ Log channel info for debugging
         validRecordings.forEach(rec => {
           if (rec.channels) {
             console.log(`📼 Recording ${rec.call_id}:`, {
@@ -383,7 +448,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         const link = document.createElement("a")
         link.href = url
 
-        // ✅ Generate filename with channel info
         const timestamp = new Date(recording.created_at).toISOString().split('T')[0]
         const channelSuffix = isDualChannel(recording.channels) ? '-stereo' : '-mono'
         link.download = `recording-${timestamp}-${recording.to_number}${channelSuffix}.${extension}`
@@ -405,12 +469,14 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
     [apiUrl, demoMode]
   )
 
+  // ✅ Fixed audio playback with proper Promise handling
   const handleTogglePlay = useCallback(
     async (recording: Recording) => {
       if (!audioRef.current) return
 
       const audio = audioRef.current
 
+      // If already playing this recording, pause it
       if (playingId === recording.call_id) {
         audio.pause()
         setPlayingId(null)
@@ -418,15 +484,50 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
       }
 
       try {
-        audio.pause()
-        audio.currentTime = 0
-        audio.src = recording.url
-        await audio.play()
-        setPlayingId(recording.call_id)
+        // ✅ Properly stop any currently playing audio
+        if (!audio.paused) {
+          audio.pause()
+          audio.currentTime = 0
+          // Small delay to ensure pause completes
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+
+        // Reset error state
         setAudioError(null)
+        
+        // ✅ Set source and explicitly load
+        audio.src = recording.url
+        audio.load()
+        
+        console.log(`▶️ Playing: ${recording.url}`)
+
+        // ✅ Properly handle play() Promise
+        const playPromise = audio.play()
+
+        if (playPromise !== undefined) {
+          await playPromise
+          setPlayingId(recording.call_id)
+          console.log(`✅ Playback started: ${recording.call_id}`)
+        }
+
       } catch (err) {
-        console.error("Error playing recording:", err)
-        setAudioError("Failed to play recording. Please try again.")
+        console.error("❌ Error playing recording:", err)
+        
+        // ✅ Provide specific error messages
+        if (err instanceof Error) {
+          if (err.name === 'AbortError') {
+            setAudioError("Playback was interrupted. Please try again.")
+          } else if (err.name === 'NotSupportedError') {
+            setAudioError("This audio format is not supported by your browser.")
+          } else if (err.name === 'NotAllowedError') {
+            setAudioError("Playback requires user interaction. Click Play again.")
+          } else {
+            setAudioError(`Playback failed: ${err.message}`)
+          }
+        } else {
+          setAudioError("Failed to play recording. Please try again.")
+        }
+        
         setPlayingId(null)
       }
     },
@@ -654,7 +755,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                           Playing
                         </span>
                       )}
-                      {/* ✅ Enhanced Format & Channel Badge */}
                       {(recording.format || recording.channels) && (
                         <span className={`text-xs px-2 py-1 rounded-full font-medium ${
                           isDualChannel(recording.channels) 

@@ -79,15 +79,12 @@ class LogUpdate(BaseModel):
     tags: Optional[List[str]] = []
 
 # ============================================================================
-# API ENDPOINTS FOR CALL LOGS - FIXES 404 ERRORS
+# API ENDPOINTS FOR CALL LOGS
 # ============================================================================
 
 @router.get("/logs")
 async def get_call_logs(limit: int = 100, skip: int = 0):
-    """
-    Get all call logs with pagination
-    THIS ENDPOINT WAS MISSING - FIXES THE 404 ERROR
-    """
+    """Get all call logs with pagination"""
     try:
         calls_collection = db.get_db()["call_logs"]
         
@@ -152,9 +149,7 @@ async def get_call_log(log_id: str):
 
 @router.put("/logs/{log_id}")
 async def update_call_log(log_id: str, update: LogUpdate):
-    """
-    Update call log (notes, disposition, tags)
-    """
+    """Update call log (notes, disposition, tags)"""
     try:
         calls_collection = db.get_db()["call_logs"]
         
@@ -257,10 +252,7 @@ async def delete_call_log(log_id: str):
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """
-    WebSocket endpoint for real-time call log updates
-    Connects to /api/webrtc/ws
-    """
+    """WebSocket endpoint for real-time call log updates"""
     await manager.connect(websocket)
     try:
         while True:
@@ -279,7 +271,7 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 # ============================================================================
-# CALL CONTROL ENDPOINTS (EXISTING)
+# CALL CONTROL ENDPOINTS
 # ============================================================================
 
 @router.post("/initiate")
@@ -397,22 +389,31 @@ async def telnyx_webhook(request: Request):
             recording_urls = event_payload.get("recording_urls", {})
             public_recording_urls = event_payload.get("public_recording_urls", {})
             
-            # ✅ DEBUG: Log full webhook payload
+            # ✅ ENHANCED DEBUG LOGGING
             logger.info("=" * 80)
             logger.info("📼 RECORDING WEBHOOK RECEIVED:")
-            logger.info(f"Recording ID: {event_payload.get('recording_id', 'N/A')}")
-            logger.info(f"Channels: {event_payload.get('channels', 'N/A')}")
-            logger.info(f"Format: {event_payload.get('format', 'N/A')}")
-            logger.info(f"Duration: {event_payload.get('duration_millis', 0) / 1000}s")
-            logger.info(f"Full Payload:\n{json.dumps(event_payload, indent=2)}")
+            logger.info(f"   Recording ID: {event_payload.get('recording_id', 'N/A')}")
+            logger.info(f"   Channels: {event_payload.get('channels', 'N/A')}")
+            logger.info(f"   Format: {event_payload.get('format', 'N/A')}")
+            logger.info(f"   Duration: {event_payload.get('duration_millis', 0) / 1000}s")
+            
+            # ✅ Validate dual-channel
+            channels = event_payload.get("channels", "unknown")
+            if str(channels) not in ["dual", "2", "stereo"]:
+                logger.error(f"❌ EXPECTED DUAL CHANNEL, GOT: {channels}")
+                logger.error("   Check Telnyx Outbound Voice Profile settings!")
+            else:
+                logger.info(f"✅ CONFIRMED: Dual-channel recording received!")
+            
+            logger.info(f"   Full Payload:\n{json.dumps(event_payload, indent=2)}")
             logger.info("=" * 80)
             
-            # Get recording URL - prefer WAV then MP3
+            # Get recording URL - prefer MP3 (matches your profile), then WAV
             recording_url = (
-                public_recording_urls.get("wav") or 
                 public_recording_urls.get("mp3") or 
-                recording_urls.get("wav") or
-                recording_urls.get("mp3")
+                public_recording_urls.get("wav") or 
+                recording_urls.get("mp3") or
+                recording_urls.get("wav")
             )
             
             if recording_url:
@@ -421,8 +422,7 @@ async def telnyx_webhook(request: Request):
                 
                 if call_log:
                     # Detect format from URL
-                    recording_format = "wav" if ".wav" in recording_url.lower() else "mp3"
-                    channels = event_payload.get("channels", "unknown")
+                    recording_format = "mp3" if ".mp3" in recording_url.lower() else "wav"
                     
                     # Update call log with recording URL
                     calls_collection.update_one(
@@ -431,12 +431,12 @@ async def telnyx_webhook(request: Request):
                             "recording_url": recording_url,
                             "recording_saved_at": datetime.utcnow(),
                             "has_recording": True,
-                            "recording_channels": channels,  # ✅ Store channel info
+                            "recording_channels": channels,
                             "recording_format": recording_format
                         }}
                     )
                     
-                    # ✅ NEW: Save to recordings collection
+                    # ✅ Save to recordings collection
                     recordings_collection = db.get_db()["recordings"]
                     recording_data = {
                         "call_id": call_log["call_id"],
@@ -448,8 +448,8 @@ async def telnyx_webhook(request: Request):
                         "from_number": call_log.get("from_number", "Unknown"),
                         "created_at": datetime.utcnow(),
                         "status": "completed",
-                        "format": recording_format,  # ✅ Store actual format
-                        "channels": channels,  # ✅ Store channel config
+                        "format": recording_format,
+                        "channels": channels,
                         "filename": f"recording-{call_log['call_id']}.{recording_format}"
                     }
                     
@@ -544,7 +544,7 @@ async def telnyx_webhook(request: Request):
                     "call": updated_call
                 })
             
-            # Auto-start recording with WAV format
+            # Auto-start recording with MP3 dual-channel
             await asyncio.sleep(1)
             
             if not call_doc.get("recording_requested"):
@@ -556,15 +556,21 @@ async def telnyx_webhook(request: Request):
                             f"{TELNYX_BASE_URL}/calls/{pstn_call_control_id}/actions/record_start",
                             headers=headers,
                             json={
-                                "format": "wav",  # ✅ WAV has better dual-channel support
-                                "channels": "dual",
+                                "format": "mp3",  # ✅ Matches your Outbound Voice Profile
+                                "channels": "dual",  # ✅ Dual-channel enabled
                                 "play_beep": False,
                             }
                         )
                     
                     if record_response.status_code == 200:
                         response_data = record_response.json()
-                        logger.info(f"🔴 Recording started successfully: {json.dumps(response_data, indent=2)}")
+                        
+                        # ✅ Validate Telnyx accepted dual-channel
+                        actual_data = response_data.get("data", {})
+                        logger.info(f"🔍 Recording API Response:")
+                        logger.info(f"   Format: {actual_data.get('format', 'N/A')}")
+                        logger.info(f"   Channels: {actual_data.get('channels', 'N/A')}")
+                        logger.info(f"   Full response: {json.dumps(response_data, indent=2)}")
                         
                         calls_collection.update_one(
                             {"call_id": internal_call_id},
@@ -572,8 +578,8 @@ async def telnyx_webhook(request: Request):
                                 "is_recording": True,
                                 "recording_requested": True,
                                 "recording_started_at": datetime.utcnow(),
-                                "recording_channels": "dual",  # Track channel config
-                                "recording_format": "wav"
+                                "recording_channels": "dual",
+                                "recording_format": "mp3"
                             }}
                         )
                         
@@ -584,7 +590,7 @@ async def telnyx_webhook(request: Request):
                             "to_number": call_doc.get("to_number", "Unknown"),
                             "from_number": call_doc.get("from_number", "Unknown"),
                             "channels": "dual",
-                            "format": "wav",
+                            "format": "mp3",
                             "timestamp": datetime.utcnow().isoformat()
                         })
                     else:
@@ -668,13 +674,9 @@ async def telnyx_webhook(request: Request):
         logger.error(f"❌ Webhook error: {str(e)}")
         return {"status": "error", "message": str(e)}
 
-# ✅ FIXED: Idempotent hangup endpoint
 @router.post("/hangup/{call_id}")
 async def hangup_call(call_id: str):
-    """
-    Hangup call and stop recording - IDEMPOTENT (safe to call multiple times)
-    Returns success even if call is already ended
-    """
+    """Hangup call and stop recording - IDEMPOTENT"""
     try:
         calls_collection = db.get_db()["call_logs"]
         call_doc = calls_collection.find_one({"call_id": call_id})
@@ -710,7 +712,6 @@ async def hangup_call(call_id: str):
                     )
                 logger.info(f"⏹️ Recording stopped: {call_id}")
                 
-                # ✅ Broadcast recording stopped
                 await manager.broadcast({
                     "type": "recording_stopped",
                     "call_id": call_id,
@@ -734,7 +735,6 @@ async def hangup_call(call_id: str):
                 if response.status_code == 200:
                     logger.info(f"✅ Call hung up: {pstn_call_control_id}")
                 elif response.status_code == 422:
-                    # 422 = Call already ended on Telnyx side
                     logger.info(f"ℹ️ Call already ended on Telnyx: {pstn_call_control_id}")
                 else:
                     logger.warning(f"⚠️ Hangup returned {response.status_code}: {response.text}")
@@ -744,7 +744,7 @@ async def hangup_call(call_id: str):
             except Exception as e:
                 logger.warning(f"⚠️ Hangup error (may already be ended): {e}")
         
-        # ✅ Always update database state (even if Telnyx calls failed)
+        # ✅ Always update database state
         started_at = call_doc.get("answered_at") or call_doc.get("started_at")
         duration = 0
         if started_at:
@@ -781,10 +781,9 @@ async def hangup_call(call_id: str):
         logger.error(f"❌ Hangup error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ✅ UPDATED: Recording start endpoint - WAV format for dual-channel
 @router.post("/recording/start")
 async def start_recording(request: Request):
-    """Manually start recording - matches frontend API structure"""
+    """Manually start recording - MP3 dual-channel"""
     try:
         data = await request.json()
         call_id = data.get("call_id")
@@ -816,8 +815,8 @@ async def start_recording(request: Request):
                 f"{TELNYX_BASE_URL}/calls/{pstn_call_control_id}/actions/record_start",
                 headers=headers,
                 json={
-                    "format": "wav",  # ✅ Changed to WAV for better dual-channel
-                    "channels": "dual",
+                    "format": "mp3",  # ✅ Matches your Outbound Voice Profile
+                    "channels": "dual",  # ✅ Dual-channel
                     "play_beep": False,
                 }
             )
@@ -830,19 +829,18 @@ async def start_recording(request: Request):
                     "recording_requested": True,
                     "recording_started_at": datetime.utcnow(),
                     "recording_channels": "dual",
-                    "recording_format": "wav"
+                    "recording_format": "mp3"
                 }}
             )
             logger.info(f"🔴 Recording started: {call_id}")
             
-            # ✅ Broadcast to all WebSocket clients
             await manager.broadcast({
                 "type": "recording_started",
                 "call_id": call_id,
                 "to_number": call_doc.get("to_number", "Unknown"),
                 "from_number": call_doc.get("from_number", "Unknown"),
                 "channels": "dual",
-                "format": "wav",
+                "format": "mp3",
                 "timestamp": datetime.utcnow().isoformat()
             })
             
@@ -861,10 +859,9 @@ async def start_recording(request: Request):
         logger.error(f"❌ Start recording error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ✅ UPDATED: Recording stop endpoint - matches frontend API call
 @router.post("/recording/stop")
 async def stop_recording(request: Request):
-    """Manually stop recording - matches frontend API structure"""
+    """Manually stop recording"""
     try:
         data = await request.json()
         call_id = data.get("call_id")
@@ -901,7 +898,6 @@ async def stop_recording(request: Request):
             )
             logger.info(f"⏹️ Recording stopped: {call_id}")
             
-            # ✅ Broadcast to all WebSocket clients
             await manager.broadcast({
                 "type": "recording_stopped",
                 "call_id": call_id,

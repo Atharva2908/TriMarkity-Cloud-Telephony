@@ -20,7 +20,7 @@ interface Recording {
   recording_id?: string
   is_active?: boolean
   format?: string
-  channels?: string
+  channels?: string | number
 }
 
 interface RecordingManagerProps {
@@ -46,6 +46,13 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
   const progressBarRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+
+  // ✅ Helper function to check if recording is dual-channel
+  const isDualChannel = (channels: string | number | undefined): boolean => {
+    if (!channels) return false
+    const channelStr = String(channels).toLowerCase()
+    return channelStr === 'dual' || channelStr === '2' || channelStr === 'stereo'
+  }
 
   // ✅ WebSocket for real-time updates
   useEffect(() => {
@@ -78,6 +85,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
             if (data.type === 'recording_started') {
               console.log('🔴 Recording started:', data.call_id)
+              console.log('   Format:', data.format || 'mp3')
+              console.log('   Channels:', data.channels || 'unknown')
               
               setActiveRecordings(prev => {
                 const exists = prev.some(rec => rec.call_id === data.call_id)
@@ -108,6 +117,13 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
             if (data.type === 'recording_added') {
               console.log('🎙️ New recording added:', data.call_id)
+              
+              // Log recording details
+              if (data.recording) {
+                console.log('   Format:', data.recording.format)
+                console.log('   Channels:', data.recording.channels)
+                console.log('   Is Dual:', isDualChannel(data.recording.channels))
+              }
               
               setActiveRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
               fetchRecordings()
@@ -270,6 +286,17 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         const recordingsList = Array.isArray(data.recordings) ? data.recordings : []
         const validRecordings = recordingsList.filter(rec => rec.url && rec.url.trim() !== '')
 
+        // ✅ Log channel info for debugging
+        validRecordings.forEach(rec => {
+          if (rec.channels) {
+            console.log(`📼 Recording ${rec.call_id}:`, {
+              format: rec.format,
+              channels: rec.channels,
+              isDual: isDualChannel(rec.channels)
+            })
+          }
+        })
+
         setRecordings(validRecordings)
 
         if (validRecordings.length === 0 && recordingsList.length > 0) {
@@ -317,7 +344,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
     [apiUrl, demoMode, playingId]
   )
 
-  // ✅ FIXED: Download through backend with proper format detection
   const handleDownload = useCallback(
     async (recording: Recording) => {
       try {
@@ -330,7 +356,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         setDownloading(recording.call_id)
         console.log(`📥 Downloading recording: ${recording.call_id}`)
 
-        // ✅ Use backend download endpoint
         const response = await fetch(
           `${apiUrl}/api/calls/recordings/download/${encodeURIComponent(recording.call_id)}`,
           {
@@ -342,7 +367,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
           throw new Error(`Download failed: ${response.status} ${response.statusText}`)
         }
 
-        // Get the blob from response
         const blob = await response.blob()
         
         // Detect file extension from Content-Type, recording format, or URL
@@ -355,21 +379,19 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
           extension = 'mp3'
         }
         
-        // Create download link
         const url = window.URL.createObjectURL(blob)
         const link = document.createElement("a")
         link.href = url
 
-        // Generate filename with proper extension
+        // ✅ Generate filename with channel info
         const timestamp = new Date(recording.created_at).toISOString().split('T')[0]
-        const channels = recording.channels === 'dual' ? '-stereo' : ''
-        link.download = `recording-${timestamp}-${recording.to_number}${channels}.${extension}`
+        const channelSuffix = isDualChannel(recording.channels) ? '-stereo' : '-mono'
+        link.download = `recording-${timestamp}-${recording.to_number}${channelSuffix}.${extension}`
 
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
 
-        // Cleanup
         setTimeout(() => window.URL.revokeObjectURL(url), 100)
         
         console.log(`✅ Recording downloaded: ${link.download}`)
@@ -502,7 +524,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                 {activeRecordings.length} Active Recording{activeRecordings.length > 1 ? 's' : ''}
               </p>
               <p className="text-xs text-muted-foreground">
-                {activeRecordings.map(r => `${r.to_number} (${r.channels === 'dual' ? 'Stereo' : 'Mono'})`).join(', ')}
+                {activeRecordings.map(r => `${r.to_number} (${isDualChannel(r.channels) ? 'Stereo' : 'Mono'})`).join(', ')}
               </p>
             </div>
           </div>
@@ -632,11 +654,16 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                           Playing
                         </span>
                       )}
-                      {/* Format & Channel Badge */}
+                      {/* ✅ Enhanced Format & Channel Badge */}
                       {(recording.format || recording.channels) && (
-                        <span className="text-xs bg-secondary px-2 py-1 rounded-full font-medium text-muted-foreground">
+                        <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                          isDualChannel(recording.channels) 
+                            ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30' 
+                            : 'bg-secondary text-muted-foreground'
+                        }`}>
                           {recording.format?.toUpperCase() || 'MP3'}
-                          {recording.channels === 'dual' && ' • Stereo'}
+                          {isDualChannel(recording.channels) && ' • Stereo'}
+                          {!isDualChannel(recording.channels) && recording.channels && ' • Mono'}
                         </span>
                       )}
                     </div>

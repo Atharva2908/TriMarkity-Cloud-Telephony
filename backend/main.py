@@ -129,6 +129,7 @@ try:
     
     logger.info("✅ Core routes loaded successfully")
     logger.info(f"✅ Recordings router registered at: /api/calls/recordings")
+    logger.info(f"✅ WebRTC router registered at: /api/webrtc")
 except ImportError as e:
     logger.warning(f"⚠️ Some core routes not available: {e}")
 except Exception as e:
@@ -156,10 +157,13 @@ except Exception as e:
     traceback.print_exc()
 
 # ----------------------------
-# WebSocket Endpoint
+# WebSocket Endpoints
 # ----------------------------
+
+# ✅ Main WebSocket endpoint for call status updates
 @app.websocket("/ws/calls")
 async def websocket_endpoint(websocket: WebSocket):
+    """Main WebSocket for real-time call status updates"""
     await call_manager.connect(websocket)
     try:
         while True:
@@ -174,6 +178,9 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         await call_manager.disconnect(websocket)
+
+# ✅ Note: /api/webrtc/ws is handled by webrtc.router (in webrtc.py)
+# This allows the call logs page to connect to its own WebSocket
 
 # ----------------------------
 # Health & Status Endpoints
@@ -212,11 +219,15 @@ async def api_status():
             "health": "/health",
             "docs": "/docs",
             "redoc": "/redoc",
-            "websocket": "/ws/calls",
-            "analytics_ws": "/ws/analytics",
+            "websockets": {
+                "main": "/ws/calls",
+                "webrtc": "/api/webrtc/ws",
+                "analytics": "/ws/analytics"
+            },
             "api": {
                 "contacts": "/api/contacts",
                 "calls": "/api/calls",
+                "call_logs": "/api/webrtc/logs",
                 "recordings": "/api/calls/recordings/list",
                 "webrtc": "/api/webrtc",
                 "outbound": "/api/outbound",

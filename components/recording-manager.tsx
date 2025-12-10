@@ -1,11 +1,12 @@
 "use client"
 
 import { useState, useCallback, useEffect, useRef } from "react"
-import { Download, Trash2, Play, Pause, RefreshCw, Loader2, Volume2, Calendar, Clock, HardDrive, AlertCircle, Circle } from "lucide-react"
+import { Download, Trash2, Play, Pause, RefreshCw, Loader2, Volume2, Calendar, Clock, HardDrive, AlertCircle, Circle, Sparkles } from "lucide-react"
 import { useApiConfig } from "@/hooks/use-api-config"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { toast } from "sonner" // Optional: Add toast notifications
 
 interface Recording {
   call_id: string
@@ -21,6 +22,7 @@ interface Recording {
   is_active?: boolean
   format?: string
   channels?: string | number
+  direction?: string // ✅ Added direction field
 }
 
 interface RecordingManagerProps {
@@ -42,6 +44,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
   const [wsConnected, setWsConnected] = useState(false)
   const [downloading, setDownloading] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [cleaningUp, setCleaningUp] = useState(false) // ✅ Added cleanup state
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const progressBarRef = useRef<HTMLDivElement>(null)
@@ -103,7 +106,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                     size: 0,
                     is_active: true,
                     format: data.format || 'wav',
-                    channels: data.channels || 'dual'
+                    channels: data.channels || 'dual',
+                    direction: data.direction || 'outbound' // ✅ Track direction
                   }
                 ]
               })
@@ -240,7 +244,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
             from_number: "+12125551234",
             status: "completed",
             format: "mp3",
-            channels: "dual"
+            channels: "dual",
+            direction: "outbound"
           },
         ])
       } else {
@@ -251,7 +256,13 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         const data = await response.json()
 
         const recordingsList = Array.isArray(data.recordings) ? data.recordings : []
-        const validRecordings = recordingsList.filter(rec => rec.url && rec.url.trim() !== '')
+        
+        // ✅ Filter out recordings with duration = 0 (empty recordings)
+        const validRecordings = recordingsList.filter(rec => 
+          rec.url && 
+          rec.url.trim() !== '' && 
+          rec.duration > 0 // ✅ Only show recordings with actual audio
+        )
 
         setRecordings(validRecordings)
       }
@@ -262,6 +273,47 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
       setLoading(false)
     }
   }, [apiUrl, demoMode])
+
+  // ✅ NEW: Cleanup duplicate/empty recordings
+  const handleCleanupDuplicates = useCallback(async () => {
+    if (!confirm("Remove all empty recordings (0 seconds duration)? This will clean up any duplicate or failed recordings.")) {
+      return
+    }
+
+    try {
+      setCleaningUp(true)
+      setError(null)
+
+      const response = await fetch(`${apiUrl}/api/webrtc/recordings/cleanup-duplicates`, {
+        method: "POST",
+      })
+
+      if (!response.ok) {
+        throw new Error(`Cleanup failed: ${response.status}`)
+      }
+
+      const result = await response.json()
+      
+      // Show success message
+      if (result.deleted_count > 0) {
+        setError(null)
+        // Optional: Show toast notification
+        // toast.success(`Removed ${result.deleted_count} empty recordings`)
+        
+        // Refresh recordings list
+        await fetchRecordings()
+      } else {
+        // Optional: Show info message
+        // toast.info("No empty recordings found")
+      }
+
+    } catch (err) {
+      console.error("Cleanup error:", err)
+      setError(err instanceof Error ? err.message : "Failed to cleanup recordings")
+    } finally {
+      setCleaningUp(false)
+    }
+  }, [apiUrl, fetchRecordings])
 
   const handleDelete = useCallback(
     async (callId: string) => {
@@ -336,8 +388,11 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         link.href = url
 
         const timestamp = new Date(recording.created_at).toISOString().split('T')[0]
-        const channelSuffix = isDualChannel(recording.channels) ? '-stereo' : '-mono'
-        link.download = `recording-${timestamp}-${recording.to_number}${channelSuffix}.${extension}`
+        const direction = recording.direction?.toUpperCase() || 'CALL'
+        const channelSuffix = isDualChannel(recording.channels) ? '-STEREO' : '-MONO'
+        
+        // ✅ Better filename with direction
+        link.download = `${timestamp}-${direction}-${recording.to_number}${channelSuffix}.${extension}`
 
         document.body.appendChild(link)
         link.click()
@@ -354,7 +409,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
     [apiUrl, demoMode]
   )
 
-  // ✅ FIXED: Use proxy endpoint for playback
   const handleTogglePlay = useCallback(
     async (recording: Recording) => {
       if (!audioRef.current) return
@@ -376,22 +430,18 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
         setAudioError(null)
         
-        // ✅ Use proxied download endpoint instead of direct S3 URL
         const proxyUrl = demoMode 
           ? recording.url 
           : `${apiUrl}/api/webrtc/recordings/download/${encodeURIComponent(recording.call_id)}`
         
         audio.src = proxyUrl
         audio.load()
-        
-        console.log(`▶️ Playing via proxy: ${proxyUrl}`)
 
         const playPromise = audio.play()
 
         if (playPromise !== undefined) {
           await playPromise
           setPlayingId(recording.call_id)
-          console.log(`✅ Playback started: ${recording.call_id}`)
         }
 
       } catch (err) {
@@ -491,10 +541,25 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
               )}
             </div>
           </div>
-          <Button onClick={fetchRecordings} disabled={loading} variant="outline" size="sm" className="gap-2">
-            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-            Refresh
-          </Button>
+          <div className="flex gap-2">
+            {/* ✅ NEW: Cleanup button */}
+            {!demoMode && recordings.length > 0 && (
+              <Button 
+                onClick={handleCleanupDuplicates} 
+                disabled={cleaningUp} 
+                variant="outline" 
+                size="sm" 
+                className="gap-2"
+              >
+                <Sparkles className={`w-4 h-4 ${cleaningUp ? "animate-spin" : ""}`} />
+                Cleanup
+              </Button>
+            )}
+            <Button onClick={fetchRecordings} disabled={loading} variant="outline" size="sm" className="gap-2">
+              <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+          </div>
         </div>
       </Card>
 
@@ -508,7 +573,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                 {activeRecordings.length} Recording{activeRecordings.length > 1 ? 's' : ''} in Progress
               </p>
               <p className="text-xs text-muted-foreground">
-                {activeRecordings.map(r => `${r.to_number} (Complete Conversation)`).join(', ')}
+                {activeRecordings.map(r => `${r.to_number} (${r.direction?.toUpperCase() || 'CALL'} • Complete Conversation)`).join(', ')}
               </p>
             </div>
           </div>
@@ -630,8 +695,18 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                   {/* Recording Info */}
                   <div className="flex-1 min-w-0 w-full">
-                    <div className="flex items-center gap-2 mb-2">
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <p className="font-bold font-mono text-lg text-foreground">{recording.to_number}</p>
+                      {/* ✅ Direction badge */}
+                      {recording.direction && (
+                        <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                          recording.direction === 'inbound' 
+                            ? 'bg-blue-500/20 text-blue-700 dark:text-blue-400 border border-blue-500/30' 
+                            : 'bg-purple-500/20 text-purple-700 dark:text-purple-400 border border-purple-500/30'
+                        }`}>
+                          {recording.direction === 'inbound' ? '📲 INBOUND' : '📞 OUTBOUND'}
+                        </span>
+                      )}
                       {playingId === recording.call_id && (
                         <span className="text-xs bg-primary/20 text-primary px-2 py-1 rounded-full flex items-center gap-1.5 font-medium">
                           <span className="w-2 h-2 bg-primary rounded-full animate-pulse" />

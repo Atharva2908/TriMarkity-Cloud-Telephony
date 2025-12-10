@@ -315,7 +315,7 @@ async def download_recording(call_id: str):
             content=response.content,
             media_type=content_type,
             headers={
-                "Content-Disposition": f'inline; filename="{filename}"',  # ✅ Changed to 'inline'
+                "Content-Disposition": f'inline; filename="{filename}"',
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Expose-Headers": "Content-Disposition, Content-Length",
                 "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -330,7 +330,6 @@ async def download_recording(call_id: str):
     except Exception as e:
         logger.error(f"❌ Download error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.delete("/recordings/{call_id}/delete")
 async def delete_recording(call_id: str):
@@ -379,6 +378,33 @@ async def delete_recording(call_id: str):
         raise
     except Exception as e:
         logger.error(f"❌ Delete recording error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/recordings/cleanup-duplicates")
+async def cleanup_duplicate_recordings():
+    """Remove empty recordings (0 bytes, 0 duration)"""
+    try:
+        recordings_collection = db.get_db()["recordings"]
+        
+        # Delete recordings with no duration or no URL
+        result = recordings_collection.delete_many({
+            "$or": [
+                {"duration": {"$lte": 0}},
+                {"size": {"$lte": 0}},
+                {"url": {"$in": [None, ""]}}
+            ]
+        })
+        
+        logger.info(f"🧹 Cleaned up {result.deleted_count} empty recordings")
+        
+        return {
+            "success": True,
+            "deleted_count": result.deleted_count,
+            "message": f"Removed {result.deleted_count} empty recordings"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Cleanup error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
@@ -440,7 +466,7 @@ async def initiate_call(request: InitiateCallRequest):
             "webhook_url": f"{TELNYX_WEBHOOK_BASE}/api/webrtc/webhook/telnyx",
             "client_state": base64.b64encode(json.dumps({
                 "internal_call_id": internal_call_id,
-                "leg": "outbound"  # ✅ Mark as outbound
+                "leg": "outbound"
             }).encode()).decode(),
             "timeout_secs": 60,
             "time_limit_secs": 14400,
@@ -473,7 +499,7 @@ async def initiate_call(request: InitiateCallRequest):
             "telnyx_call_control_id": pstn_call_control_id,
             "from_number": from_number,
             "to_number": request.to_number,
-            "direction": "outbound",  # ✅ Track direction
+            "direction": "outbound",
             "status": "dialing",
             "is_recording": False,
             "recording_requested": False,
@@ -520,7 +546,7 @@ async def telnyx_webhook(request: Request):
         logger.info(f"📞 Webhook event: {event_type}")
         
         # ============================================================================
-        # ✅ HANDLE INBOUND CALL INITIATION (NEW!)
+        # ✅ HANDLE INBOUND CALL INITIATION
         # ============================================================================
         if event_type == "call.initiated":
             # Check if this is an inbound call (no client_state)
@@ -543,7 +569,7 @@ async def telnyx_webhook(request: Request):
                     "telnyx_call_control_id": call_control_id,
                     "from_number": from_number,
                     "to_number": to_number,
-                    "direction": "inbound",  # ✅ Mark as inbound
+                    "direction": "inbound",
                     "status": "ringing",
                     "is_recording": False,
                     "recording_requested": False,
@@ -649,7 +675,7 @@ async def telnyx_webhook(request: Request):
                         "size": 0,  # Telnyx doesn't provide size in webhook
                         "to_number": call_log.get("to_number", "Unknown"),
                         "from_number": call_log.get("from_number", "Unknown"),
-                        "direction": call_log.get("direction", "outbound"),  # ✅ Track direction
+                        "direction": call_log.get("direction", "outbound"),
                         "created_at": datetime.utcnow(),
                         "status": "completed",
                         "format": recording_format,
@@ -735,19 +761,47 @@ async def telnyx_webhook(request: Request):
             "Content-Type": "application/json"
         }
         
-        # ✅ When call answered (both inbound and outbound) - auto-start recording
+        # ============================================================================
+        # ✅ FIXED: When call answered - auto-start recording (PREVENT DUPLICATES)
+        # ============================================================================
         if event_type == "call.answered":
             call_control_id = event_payload.get("call_control_id")
             
             logger.info(f"📱 Call answered: {call_control_id} (Direction: {call_doc.get('direction', 'unknown')})")
             
-            calls_collection.update_one(
-                {"call_id": internal_call_id},
-                {"$set": {
-                    "status": "active",
-                    "answered_at": datetime.utcnow()
-                }}
+            # ✅ ATOMIC UPDATE: Only one webhook request will succeed
+            update_result = calls_collection.update_one(
+                {
+                    "call_id": internal_call_id,
+                    "recording_requested": False  # ✅ Only update if still False
+                },
+                {
+                    "$set": {
+                        "status": "active",
+                        "answered_at": datetime.utcnow(),
+                        "recording_requested": True,  # ✅ Prevent duplicates
+                        "recording_request_started_at": datetime.utcnow()
+                    }
+                }
             )
+            
+            # ✅ Check if THIS request won the race
+            if update_result.modified_count == 0:
+                logger.info(f"⚠️ Recording already requested for {internal_call_id}, skipping duplicate")
+                
+                # Still broadcast call answered (just don't start recording again)
+                updated_call = calls_collection.find_one({"call_id": internal_call_id})
+                if updated_call:
+                    updated_call["_id"] = str(updated_call["_id"])
+                    await manager.broadcast({
+                        "type": "call_answered",
+                        "call": updated_call
+                    })
+                
+                return {"status": "ok"}
+            
+            # ✅ This request won - proceed with recording
+            logger.info(f"✅ This webhook will start recording for {internal_call_id}")
             
             # Broadcast call answered
             updated_call = calls_collection.find_one({"call_id": internal_call_id})
@@ -758,62 +812,77 @@ async def telnyx_webhook(request: Request):
                     "call": updated_call
                 })
             
-            # Auto-start recording with WAV dual-channel
-            await asyncio.sleep(1)
+            # Wait for call to stabilize
+            await asyncio.sleep(1.5)  # ✅ Increased delay
             
-            if not call_doc.get("recording_requested"):
-                try:
-                    logger.info(f"🔴 Starting DUAL-CHANNEL WAV recording for: {internal_call_id}")
-                    
-                    async with httpx.AsyncClient(timeout=10.0) as client:
-                        record_response = await client.post(
-                            f"{TELNYX_BASE_URL}/calls/{call_control_id}/actions/record_start",
-                            headers=headers,
-                            json={
-                                "format": "wav",  # ✅ WAV format
-                                "channels": "dual",  # ✅ Dual-channel enabled
-                                "play_beep": False,
-                            }
-                        )
-                    
-                    if record_response.status_code == 200:
-                        response_data = record_response.json()
-                        
-                        # ✅ Validate Telnyx accepted dual-channel
-                        actual_data = response_data.get("data", {})
-                        logger.info(f"🔍 Recording API Response:")
-                        logger.info(f"   Format: {actual_data.get('format', 'N/A')}")
-                        logger.info(f"   Channels: {actual_data.get('channels', 'N/A')}")
-                        logger.info(f"   Full response: {json.dumps(response_data, indent=2)}")
-                        
-                        calls_collection.update_one(
-                            {"call_id": internal_call_id},
-                            {"$set": {
-                                "is_recording": True,
-                                "recording_requested": True,
-                                "recording_started_at": datetime.utcnow(),
-                                "recording_channels": "dual",
-                                "recording_format": "wav"
-                            }}
-                        )
-                        
-                        # Broadcast recording started
-                        await manager.broadcast({
-                            "type": "recording_started",
-                            "call_id": internal_call_id,
-                            "to_number": call_doc.get("to_number", "Unknown"),
-                            "from_number": call_doc.get("from_number", "Unknown"),
-                            "direction": call_doc.get("direction", "outbound"),
-                            "channels": "dual",
+            # Start recording (only happens once)
+            try:
+                logger.info(f"🔴 Starting DUAL-CHANNEL WAV recording for: {internal_call_id}")
+                
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    record_response = await client.post(
+                        f"{TELNYX_BASE_URL}/calls/{call_control_id}/actions/record_start",
+                        headers=headers,
+                        json={
                             "format": "wav",
-                            "timestamp": datetime.utcnow().isoformat()
-                        })
-                    else:
-                        error_text = record_response.text
-                        logger.error(f"❌ Recording start failed ({record_response.status_code}): {error_text}")
-                        
-                except Exception as e:
-                    logger.error(f"❌ Auto-record error: {str(e)}", exc_info=True)
+                            "channels": "dual",
+                            "play_beep": False,
+                        }
+                    )
+                
+                if record_response.status_code == 200:
+                    response_data = record_response.json()
+                    actual_data = response_data.get("data", {})
+                    
+                    logger.info(f"✅ Recording started successfully")
+                    logger.info(f"   Format: {actual_data.get('format', 'N/A')}")
+                    logger.info(f"   Channels: {actual_data.get('channels', 'N/A')}")
+                    
+                    calls_collection.update_one(
+                        {"call_id": internal_call_id},
+                        {"$set": {
+                            "is_recording": True,
+                            "recording_started_at": datetime.utcnow(),
+                            "recording_channels": "dual",
+                            "recording_format": "wav"
+                        }}
+                    )
+                    
+                    # Broadcast recording started
+                    await manager.broadcast({
+                        "type": "recording_started",
+                        "call_id": internal_call_id,
+                        "to_number": call_doc.get("to_number", "Unknown"),
+                        "from_number": call_doc.get("from_number", "Unknown"),
+                        "direction": call_doc.get("direction", "outbound"),
+                        "channels": "dual",
+                        "format": "wav",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                else:
+                    error_text = record_response.text
+                    logger.error(f"❌ Recording start failed ({record_response.status_code}): {error_text}")
+                    
+                    # Reset flag on failure so user can retry
+                    calls_collection.update_one(
+                        {"call_id": internal_call_id},
+                        {"$set": {
+                            "recording_requested": False,
+                            "recording_error": error_text
+                        }}
+                    )
+                    
+            except Exception as e:
+                logger.error(f"❌ Auto-record error: {str(e)}", exc_info=True)
+                
+                # Reset flag on error
+                calls_collection.update_one(
+                    {"call_id": internal_call_id},
+                    {"$set": {
+                        "recording_requested": False,
+                        "recording_error": str(e)
+                    }}
+                )
         
         elif event_type == "call.recording.started":
             logger.info(f"🔴 Recording confirmed: {internal_call_id}")
@@ -943,16 +1012,16 @@ async def hangup_call(call_id: str):
                 if response.status_code == 200:
                     logger.info(f"✅ Call hung up: {pstn_call_control_id}")
                 elif response.status_code == 422:
-                    logger.info(f"ℹ️ Call already ended on Telnyx: {pstn_call_control_id}")
+                    logger.info(f"ℹ️ Call {call_id} already ended on Telnyx side")
                 else:
                     logger.warning(f"⚠️ Hangup returned {response.status_code}: {response.text}")
                     
             except httpx.TimeoutException:
-                logger.warning(f"⚠️ Hangup timeout for {pstn_call_control_id}")
+                logger.warning(f"⚠️ Hangup timeout for {call_id}")
             except Exception as e:
                 logger.warning(f"⚠️ Hangup error (may already be ended): {e}")
         
-        # ✅ Always update database state
+        # Update database regardless of Telnyx response
         started_at = call_doc.get("answered_at") or call_doc.get("started_at")
         duration = 0
         if started_at:
@@ -964,18 +1033,20 @@ async def hangup_call(call_id: str):
                 "status": "ended",
                 "ended_at": datetime.utcnow(),
                 "duration": duration,
-                "updated_at": datetime.utcnow()
+                "hangup_cause": "USER_HANGUP",
+                "hangup_source": "client"
             }}
         )
         
-        # Broadcast call ended event
+        # Broadcast call ended
         await manager.broadcast({
             "type": "call_ended",
             "call_id": call_id,
             "duration": duration
         })
         
-        logger.info(f"✅ Call cleanup complete: {call_id}")
+        logger.info(f"📴 Call cleanup complete: {call_id}")
+        
         return {
             "status": "ended",
             "call_id": call_id,
@@ -1007,7 +1078,7 @@ async def start_recording(request: Request):
         
         if call_doc.get("status") != "active":
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail=f"Call must be active to start recording (current status: {call_doc.get('status')})"
             )
         
@@ -1023,8 +1094,8 @@ async def start_recording(request: Request):
                 f"{TELNYX_BASE_URL}/calls/{pstn_call_control_id}/actions/record_start",
                 headers=headers,
                 json={
-                    "format": "wav",  # ✅ WAV format
-                    "channels": "dual",  # ✅ Dual-channel
+                    "format": "wav",
+                    "channels": "dual",
                     "play_beep": False,
                 }
             )
@@ -1033,13 +1104,14 @@ async def start_recording(request: Request):
             calls_collection.update_one(
                 {"call_id": call_id},
                 {"$set": {
-                    "is_recording": True, 
+                    "is_recording": True,
                     "recording_requested": True,
                     "recording_started_at": datetime.utcnow(),
                     "recording_channels": "dual",
                     "recording_format": "wav"
                 }}
             )
+            
             logger.info(f"🔴 Recording started: {call_id}")
             
             await manager.broadcast({
@@ -1097,7 +1169,7 @@ async def stop_recording(request: Request):
                 headers=headers,
             )
         
-        if response.status_code in [200, 422]:
+        if response.status_code in (200, 422):  # 422 = already stopped
             calls_collection.update_one(
                 {"call_id": call_id},
                 {"$set": {
@@ -1105,6 +1177,7 @@ async def stop_recording(request: Request):
                     "recording_stopped_at": datetime.utcnow()
                 }}
             )
+            
             logger.info(f"⏹️ Recording stopped: {call_id}")
             
             await manager.broadcast({
@@ -1140,7 +1213,7 @@ async def get_status(call_id: str):
     return {
         "call_id": call_id,
         "status": call_doc.get("status"),
-        "direction": call_doc.get("direction", "outbound"),  # ✅ Include direction
+        "direction": call_doc.get("direction", "outbound"),
         "to": call_doc.get("to_number"),
         "from": call_doc.get("from_number"),
         "duration": call_doc.get("duration", 0),

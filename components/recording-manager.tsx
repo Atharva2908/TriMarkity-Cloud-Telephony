@@ -1,11 +1,12 @@
 "use client"
 
 import { useState, useCallback, useEffect, useRef } from "react"
-import { Download, Trash2, Play, Pause, RefreshCw, Loader2, Volume2, Calendar, Clock, HardDrive, AlertCircle, Circle } from "lucide-react"
+import { Download, Trash2, Play, Pause, RefreshCw, Loader2, Volume2, Calendar, Clock, HardDrive, AlertCircle, Circle, Phone, PhoneIncoming, PhoneOutgoing } from "lucide-react"
 import { useApiConfig } from "@/hooks/use-api-config"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
 
 interface Recording {
   call_id: string
@@ -15,6 +16,7 @@ interface Recording {
   created_at: string
   to_number: string
   from_number: string
+  direction?: string
   status?: string
   _id?: string
   recording_id?: string
@@ -41,6 +43,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
   const [audioError, setAudioError] = useState<string | null>(null)
   const [wsConnected, setWsConnected] = useState(false)
   const [downloading, setDownloading] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<string | null>(null)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const progressBarRef = useRef<HTMLDivElement>(null)
@@ -80,7 +83,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
           console.log('📡 [RecordingManager] WebSocket connected')
           setWsConnected(true)
           setError(null)
-          reconnectAttemptsRef.current = 0 // Reset on successful connection
+          reconnectAttemptsRef.current = 0
         }
 
         ws.onmessage = (event) => {
@@ -90,8 +93,9 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
             if (data.type === 'recording_started') {
               console.log('🔴 Recording started:', data.call_id)
-              console.log('   Format:', data.format || 'mp3')
+              console.log('   Format:', data.format || 'wav')
               console.log('   Channels:', data.channels || 'unknown')
+              console.log('   Direction:', data.direction || 'outbound')
               
               setActiveRecordings(prev => {
                 const exists = prev.some(rec => rec.call_id === data.call_id)
@@ -103,13 +107,14 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                     call_id: data.call_id,
                     to_number: data.to_number || 'Unknown',
                     from_number: data.from_number || 'Unknown',
+                    direction: data.direction || 'outbound',
                     duration: 0,
                     created_at: new Date().toISOString(),
                     url: '',
                     size: 0,
                     is_active: true,
-                    format: data.format || 'mp3',
-                    channels: data.channels || 'single'
+                    format: data.format || 'wav',
+                    channels: data.channels || 'dual'
                   }
                 ]
               })
@@ -126,6 +131,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
               if (data.recording) {
                 console.log('   Format:', data.recording.format)
                 console.log('   Channels:', data.recording.channels)
+                console.log('   Direction:', data.recording.direction)
                 console.log('   Is Dual:', isDualChannel(data.recording.channels))
               }
               
@@ -163,10 +169,9 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
           if (isCleaningUpRef.current) return
 
-          // ✅ Exponential backoff with max 30 seconds
           const maxAttempts = 10
-          const baseDelay = 1000 // 1 second
-          const maxDelay = 30000 // 30 seconds
+          const baseDelay = 1000
+          const maxDelay = 30000
 
           if (reconnectAttemptsRef.current < maxAttempts) {
             const delay = Math.min(
@@ -209,7 +214,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         wsRef.current.close()
       }
     }
-  }, [apiUrl, demoMode, playingId])
+  }, [apiUrl, demoMode])
 
   // Calculate total size
   useEffect(() => {
@@ -246,6 +251,11 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
       setAudioError(null)
     }
 
+    const handleCanPlayThrough = () => {
+      console.log('✅ Audio ready to play through')
+      setAudioError(null)
+    }
+
     const handleError = (e: Event) => {
       const target = e.target as HTMLAudioElement
       const errorCode = target.error?.code
@@ -257,7 +267,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         src: target.src
       })
 
-      // ✅ Provide specific error messages based on error code
       let userMessage = "Failed to load audio. "
       
       switch (errorCode) {
@@ -288,7 +297,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
     const handleStalled = () => {
       console.warn('⚠️ Audio loading stalled')
-      setAudioError("Audio loading is slow. Please wait...")
     }
 
     const handleAbort = () => {
@@ -300,6 +308,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
     audio.addEventListener("timeupdate", handleTimeUpdate)
     audio.addEventListener("loadedmetadata", handleLoadedMetadata)
     audio.addEventListener("canplay", handleCanPlay)
+    audio.addEventListener("canplaythrough", handleCanPlayThrough)
     audio.addEventListener("error", handleError)
     audio.addEventListener("loadstart", handleLoadStart)
     audio.addEventListener("stalled", handleStalled)
@@ -307,7 +316,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
     audioRef.current = audio
 
-    // ✅ Proper cleanup on unmount
     return () => {
       audio.pause()
       audio.src = ""
@@ -315,6 +323,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
       audio.removeEventListener("timeupdate", handleTimeUpdate)
       audio.removeEventListener("loadedmetadata", handleLoadedMetadata)
       audio.removeEventListener("canplay", handleCanPlay)
+      audio.removeEventListener("canplaythrough", handleCanPlayThrough)
       audio.removeEventListener("error", handleError)
       audio.removeEventListener("loadstart", handleLoadStart)
       audio.removeEventListener("stalled", handleStalled)
@@ -337,13 +346,14 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
             created_at: new Date(Date.now() - 86400000).toISOString(),
             to_number: "+12125551001",
             from_number: "+12125551234",
+            direction: "outbound",
             status: "completed",
             format: "mp3",
             channels: "dual"
           },
         ])
       } else {
-        const response = await fetch(`${apiUrl}/api/calls/recordings/list`)
+        const response = await fetch(`${apiUrl}/api/webrtc/recordings/list`)
         if (!response.ok) {
           throw new Error(`Failed to fetch recordings: ${response.status}`)
         }
@@ -353,13 +363,12 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         const validRecordings = recordingsList.filter(rec => rec.url && rec.url.trim() !== '')
 
         validRecordings.forEach(rec => {
-          if (rec.channels) {
-            console.log(`📼 Recording ${rec.call_id}:`, {
-              format: rec.format,
-              channels: rec.channels,
-              isDual: isDualChannel(rec.channels)
-            })
-          }
+          console.log(`📼 Recording ${rec.call_id}:`, {
+            format: rec.format,
+            channels: rec.channels,
+            direction: rec.direction,
+            isDual: isDualChannel(rec.channels)
+          })
         })
 
         setRecordings(validRecordings)
@@ -383,6 +392,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
       }
 
       try {
+        setDeleting(callId)
+        
         if (playingId === callId && audioRef.current) {
           audioRef.current.pause()
           audioRef.current.currentTime = 0
@@ -390,7 +401,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         }
 
         if (!demoMode) {
-          const response = await fetch(`${apiUrl}/api/calls/recordings/${encodeURIComponent(callId)}/delete`, {
+          const response = await fetch(`${apiUrl}/api/webrtc/recordings/${encodeURIComponent(callId)}/delete`, {
             method: "DELETE",
           })
           if (!response.ok) {
@@ -404,6 +415,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
       } catch (err) {
         console.error("Error deleting recording:", err)
         setError(err instanceof Error ? err.message : "Failed to delete recording")
+      } finally {
+        setDeleting(null)
       }
     },
     [apiUrl, demoMode, playingId]
@@ -422,7 +435,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         console.log(`📥 Downloading recording: ${recording.call_id}`)
 
         const response = await fetch(
-          `${apiUrl}/api/calls/recordings/download/${encodeURIComponent(recording.call_id)}`,
+          `${apiUrl}/api/webrtc/recordings/download/${encodeURIComponent(recording.call_id)}`,
           {
             method: 'GET',
           }
@@ -434,8 +447,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
         const blob = await response.blob()
         
-        // Detect file extension from Content-Type, recording format, or URL
-        let extension = 'mp3'
+        let extension = 'wav'
         const contentType = response.headers.get('content-type') || ''
         
         if (contentType.includes('wav') || recording.format === 'wav' || recording.url?.includes('.wav')) {
@@ -450,7 +462,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
         const timestamp = new Date(recording.created_at).toISOString().split('T')[0]
         const channelSuffix = isDualChannel(recording.channels) ? '-stereo' : '-mono'
-        link.download = `recording-${timestamp}-${recording.to_number}${channelSuffix}.${extension}`
+        const directionSuffix = recording.direction ? `-${recording.direction}` : ''
+        link.download = `recording-${timestamp}-${recording.to_number}${directionSuffix}${channelSuffix}.${extension}`
 
         document.body.appendChild(link)
         link.click()
@@ -469,14 +482,12 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
     [apiUrl, demoMode]
   )
 
-  // ✅ Fixed audio playback with proper Promise handling
   const handleTogglePlay = useCallback(
     async (recording: Recording) => {
       if (!audioRef.current) return
 
       const audio = audioRef.current
 
-      // If already playing this recording, pause it
       if (playingId === recording.call_id) {
         audio.pause()
         setPlayingId(null)
@@ -484,24 +495,18 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
       }
 
       try {
-        // ✅ Properly stop any currently playing audio
         if (!audio.paused) {
           audio.pause()
           audio.currentTime = 0
-          // Small delay to ensure pause completes
           await new Promise(resolve => setTimeout(resolve, 100))
         }
 
-        // Reset error state
         setAudioError(null)
-        
-        // ✅ Set source and explicitly load
         audio.src = recording.url
         audio.load()
         
         console.log(`▶️ Playing: ${recording.url}`)
 
-        // ✅ Properly handle play() Promise
         const playPromise = audio.play()
 
         if (playPromise !== undefined) {
@@ -513,7 +518,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
       } catch (err) {
         console.error("❌ Error playing recording:", err)
         
-        // ✅ Provide specific error messages
         if (err instanceof Error) {
           if (err.name === 'AbortError') {
             setAudioError("Playback was interrupted. Please try again.")
@@ -601,10 +605,10 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
             <div className="text-sm text-muted-foreground mt-1 flex items-center gap-2">
               <span>Manage and playback call recordings</span>
               {!demoMode && (
-                <span className={`inline-flex items-center gap-1 text-xs ${wsConnected ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-600 animate-pulse' : 'bg-amber-600'}`} />
+                <Badge variant={wsConnected ? "default" : "secondary"} className="gap-1">
+                  <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-amber-500'}`} />
                   {wsConnected ? 'Live' : 'Offline'}
-                </span>
+                </Badge>
               )}
             </div>
           </div>
@@ -617,15 +621,20 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
       {/* Active Recordings Banner */}
       {activeRecordings.length > 0 && (
-        <Card className="p-4 bg-rose-500/10 border-rose-500/30 animate-pulse">
+        <Card className="p-4 bg-rose-500/10 border-rose-500/30">
           <div className="flex items-center gap-3">
-            <Circle className="w-4 h-4 fill-rose-500 text-rose-500 animate-pulse" />
-            <div>
+            <div className="relative">
+              <Circle className="w-4 h-4 fill-rose-500 text-rose-500 animate-pulse" />
+              <span className="absolute -top-1 -right-1 w-2 h-2 bg-rose-500 rounded-full animate-ping" />
+            </div>
+            <div className="flex-1">
               <p className="text-sm font-semibold text-rose-600 dark:text-rose-400">
                 {activeRecordings.length} Active Recording{activeRecordings.length > 1 ? 's' : ''}
               </p>
               <p className="text-xs text-muted-foreground">
-                {activeRecordings.map(r => `${r.to_number} (${isDualChannel(r.channels) ? 'Stereo' : 'Mono'})`).join(', ')}
+                {activeRecordings.map(r => 
+                  `${r.to_number} (${isDualChannel(r.channels) ? 'Stereo' : 'Mono'} • ${r.format?.toUpperCase() || 'WAV'})`
+                ).join(', ')}
               </p>
             </div>
           </div>
@@ -644,38 +653,38 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Card className="p-4 bg-gradient-to-br from-blue-500/10 to-blue-500/5 border-blue-500/20 hover:border-blue-500/40 transition-colors">
+        <Card className="p-4 bg-gradient-to-br from-blue-500/10 to-blue-500/5 border-blue-500/20 hover:border-blue-500/40 transition-all hover:shadow-lg">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-blue-500/20 rounded-lg">
+            <div className="p-3 bg-blue-500/20 rounded-xl">
               <Volume2 className="w-6 h-6 text-blue-500" />
             </div>
             <div>
-              <p className="text-xs text-muted-foreground uppercase font-medium">Total Recordings</p>
-              <p className="text-2xl font-bold text-foreground">{recordings.length}</p>
+              <p className="text-xs text-muted-foreground uppercase font-medium tracking-wide">Total Recordings</p>
+              <p className="text-3xl font-bold text-foreground">{recordings.length}</p>
             </div>
           </div>
         </Card>
 
-        <Card className="p-4 bg-gradient-to-br from-green-500/10 to-green-500/5 border-green-500/20 hover:border-green-500/40 transition-colors">
+        <Card className="p-4 bg-gradient-to-br from-green-500/10 to-green-500/5 border-green-500/20 hover:border-green-500/40 transition-all hover:shadow-lg">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-green-500/20 rounded-lg">
+            <div className="p-3 bg-green-500/20 rounded-xl">
               <HardDrive className="w-6 h-6 text-green-500" />
             </div>
             <div>
-              <p className="text-xs text-muted-foreground uppercase font-medium">Total Storage</p>
-              <p className="text-2xl font-bold text-foreground">{formatBytes(totalSize)}</p>
+              <p className="text-xs text-muted-foreground uppercase font-medium tracking-wide">Total Storage</p>
+              <p className="text-3xl font-bold text-foreground">{formatBytes(totalSize)}</p>
             </div>
           </div>
         </Card>
 
-        <Card className="p-4 bg-gradient-to-br from-purple-500/10 to-purple-500/5 border-purple-500/20 hover:border-purple-500/40 transition-colors">
+        <Card className="p-4 bg-gradient-to-br from-purple-500/10 to-purple-500/5 border-purple-500/20 hover:border-purple-500/40 transition-all hover:shadow-lg">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-purple-500/20 rounded-lg">
+            <div className="p-3 bg-purple-500/20 rounded-xl">
               <Clock className="w-6 h-6 text-purple-500" />
             </div>
             <div>
-              <p className="text-xs text-muted-foreground uppercase font-medium">Total Duration</p>
-              <p className="text-2xl font-bold text-foreground">
+              <p className="text-xs text-muted-foreground uppercase font-medium tracking-wide">Total Duration</p>
+              <p className="text-3xl font-bold text-foreground">
                 {formatDuration(recordings.reduce((sum, rec) => sum + (rec.duration || 0), 0))}
               </p>
             </div>
@@ -686,7 +695,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
       {/* Search */}
       <Card className="p-4">
         <Input
-          placeholder="Search by phone number or call ID..."
+          placeholder="🔍 Search by phone number or call ID..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           className="w-full"
@@ -695,7 +704,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
       {/* Error Display */}
       {error && (
-        <Card className="p-4 bg-destructive/10 border-destructive/20">
+        <Card className="p-4 bg-destructive/10 border-destructive/20 animate-in fade-in slide-in-from-top-2">
           <div className="flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-destructive" />
             <p className="text-destructive text-sm font-medium">{error}</p>
@@ -705,7 +714,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
       {/* Audio Error Display */}
       {audioError && (
-        <Card className="p-4 bg-amber-500/10 border-amber-500/20">
+        <Card className="p-4 bg-amber-500/10 border-amber-500/20 animate-in fade-in slide-in-from-top-2">
           <div className="flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-amber-600" />
             <p className="text-amber-600 dark:text-amber-400 text-sm font-medium">{audioError}</p>
@@ -738,74 +747,89 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
             filteredRecordings.map((recording) => (
               <Card
                 key={recording.call_id}
-                className={`p-4 transition-all ${
+                className={`p-5 transition-all ${
                   playingId === recording.call_id
-                    ? "bg-gradient-to-br from-primary/10 to-primary/5 border-primary/30 shadow-lg"
-                    : "hover:border-border/50"
+                    ? "bg-gradient-to-br from-primary/10 to-primary/5 border-primary/30 shadow-lg scale-[1.02]"
+                    : "hover:border-border/50 hover:shadow-md"
                 }`}
               >
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                   {/* Recording Info */}
                   <div className="flex-1 min-w-0 w-full">
-                    <div className="flex items-center gap-2 mb-2">
+                    <div className="flex items-center gap-2 mb-3 flex-wrap">
                       <p className="font-bold font-mono text-lg text-foreground">{recording.to_number}</p>
+                      
+                      {/* Direction Badge */}
+                      {recording.direction && (
+                        <Badge variant={recording.direction === 'inbound' ? 'default' : 'secondary'} className="gap-1">
+                          {recording.direction === 'inbound' ? (
+                            <PhoneIncoming className="w-3 h-3" />
+                          ) : (
+                            <PhoneOutgoing className="w-3 h-3" />
+                          )}
+                          {recording.direction}
+                        </Badge>
+                      )}
+
+                      {/* Playing Badge */}
                       {playingId === recording.call_id && (
-                        <span className="text-xs bg-primary/20 text-primary px-2 py-1 rounded-full flex items-center gap-1.5 font-medium">
+                        <Badge className="gap-1.5 bg-primary/20 text-primary border-primary/30">
                           <span className="w-2 h-2 bg-primary rounded-full animate-pulse" />
                           Playing
-                        </span>
+                        </Badge>
                       )}
+
+                      {/* Format & Channel Badge */}
                       {(recording.format || recording.channels) && (
-                        <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                        <Badge className={
                           isDualChannel(recording.channels) 
-                            ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30' 
+                            ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border-emerald-500/30' 
                             : 'bg-secondary text-muted-foreground'
-                        }`}>
-                          {recording.format?.toUpperCase() || 'MP3'}
+                        }>
+                          {recording.format?.toUpperCase() || 'WAV'}
                           {isDualChannel(recording.channels) && ' • Stereo'}
                           {!isDualChannel(recording.channels) && recording.channels && ' • Mono'}
-                        </span>
+                        </Badge>
                       )}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground mb-2">
-                      <span className="flex items-center gap-1.5">
+                      <span className="flex items-center gap-1.5 bg-secondary/50 px-2 py-1 rounded">
                         <Calendar className="w-3.5 h-3.5" />
                         {formatDate(recording.created_at)}
                       </span>
-                      <span>•</span>
-                      <span className="flex items-center gap-1.5">
+                      <span className="flex items-center gap-1.5 bg-secondary/50 px-2 py-1 rounded">
                         <Clock className="w-3.5 h-3.5" />
                         {formatDuration(recording.duration)}
                       </span>
-                      <span>•</span>
-                      <span className="flex items-center gap-1.5">
+                      <span className="flex items-center gap-1.5 bg-secondary/50 px-2 py-1 rounded">
                         <HardDrive className="w-3.5 h-3.5" />
                         {formatBytes(recording.size)}
                       </span>
                     </div>
 
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-xs text-muted-foreground flex items-center gap-1">
+                      <Phone className="w-3 h-3" />
                       From: <span className="font-mono font-medium">{recording.from_number}</span>
                     </p>
 
                     {/* Progress Bar */}
                     {playingId === recording.call_id && (
-                      <div className="mt-3">
-                        <div className="flex justify-between text-xs text-muted-foreground mb-1.5">
-                          <span className="font-mono">{formatDuration(currentTime)}</span>
-                          <span className="font-mono">{formatDuration(duration)}</span>
+                      <div className="mt-4 bg-secondary/30 p-3 rounded-lg">
+                        <div className="flex justify-between text-xs text-muted-foreground mb-2">
+                          <span className="font-mono font-semibold">{formatDuration(currentTime)}</span>
+                          <span className="font-mono font-semibold">{formatDuration(duration)}</span>
                         </div>
                         <div
                           ref={progressBarRef}
                           onClick={handleProgressBarClick}
-                          className="w-full bg-secondary rounded-full h-2 cursor-pointer hover:h-3 transition-all group"
+                          className="w-full bg-secondary rounded-full h-3 cursor-pointer hover:h-4 transition-all group"
                         >
                           <div
-                            className="bg-primary h-2 rounded-full transition-all group-hover:h-3 relative"
+                            className="bg-gradient-to-r from-primary to-primary/80 h-3 rounded-full transition-all group-hover:h-4 relative shadow-lg"
                             style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
                           >
-                            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-primary rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+                            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 bg-primary rounded-full shadow-md opacity-0 group-hover:opacity-100 transition-opacity" />
                           </div>
                         </div>
                       </div>
@@ -818,7 +842,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                       onClick={() => handleTogglePlay(recording)}
                       size="sm"
                       variant={playingId === recording.call_id ? "default" : "secondary"}
-                      className="gap-2 flex-1 sm:flex-none"
+                      className="gap-2 flex-1 sm:flex-none hover:scale-105 transition-transform"
                       title={playingId === recording.call_id ? "Pause" : "Play"}
                     >
                       {playingId === recording.call_id ? (
@@ -839,7 +863,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                       size="sm"
                       variant="secondary"
                       title="Download"
-                      className="flex-1 sm:flex-none"
+                      className="flex-1 sm:flex-none hover:scale-105 transition-transform"
                       disabled={downloading === recording.call_id}
                     >
                       {downloading === recording.call_id ? (
@@ -854,9 +878,14 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                       size="sm"
                       variant="destructive"
                       title="Delete"
-                      className="flex-1 sm:flex-none"
+                      className="flex-1 sm:flex-none hover:scale-105 transition-transform"
+                      disabled={deleting === recording.call_id}
                     >
-                      <Trash2 className="w-4 h-4" />
+                      {deleting === recording.call_id ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
                     </Button>
                   </div>
                 </div>

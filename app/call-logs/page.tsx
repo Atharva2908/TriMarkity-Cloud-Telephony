@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef } from "react"
 import { Navigation } from "@/components/navigation"
 import { 
   BarChart, 
@@ -16,19 +16,13 @@ import {
   Legend
 } from "recharts"
 import { 
-  Edit, 
   Trash2, 
   Download, 
   RefreshCw, 
-  Save, 
-  X, 
   CheckSquare, 
   Square,
-  Filter,
   Search,
-  Calendar,
   FileDown,
-  MoreVertical
 } from "lucide-react"
 import { useApiConfig } from "@/hooks/use-api-config"
 
@@ -41,8 +35,6 @@ const DEMO_LOGS = [
     duration: 245,
     status: "ended",
     disposition: "completed",
-    notes: "Customer agreed to follow-up",
-    tags: ["qualified", "follow-up"],
     recording_url: "https://example.com/recording1.wav",
     created_at: new Date(Date.now() - 86400000).toISOString(),
   },
@@ -54,8 +46,6 @@ const DEMO_LOGS = [
     duration: 0,
     status: "ended",
     disposition: "no_answer",
-    notes: "Left voicemail",
-    tags: ["voicemail"],
     created_at: new Date(Date.now() - 43200000).toISOString(),
   },
   {
@@ -66,8 +56,6 @@ const DEMO_LOGS = [
     duration: 180,
     status: "ended",
     disposition: "completed",
-    notes: "Scheduled demo for next week",
-    tags: ["demo", "scheduled"],
     recording_url: "https://example.com/recording3.wav",
     created_at: new Date().toISOString(),
   },
@@ -79,8 +67,6 @@ const DEMO_LOGS = [
     duration: 0,
     status: "ended",
     disposition: "busy",
-    notes: "Line was busy",
-    tags: ["retry"],
     created_at: new Date(Date.now() - 3600000).toISOString(),
   },
 ]
@@ -93,17 +79,8 @@ interface CallLog {
   duration: number
   status: string
   disposition?: string
-  notes?: string
-  tags?: string[]
   recording_url?: string
   created_at: string
-}
-
-interface EditingLog {
-  _id: string
-  notes: string
-  disposition: string
-  tags: string
 }
 
 export default function CallLogsPage() {
@@ -120,21 +97,63 @@ export default function CallLogsPage() {
     avgDuration: 0
   })
   const [useDemo, setUseDemo] = useState(false)
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [editForm, setEditForm] = useState<EditingLog>({ 
-    _id: "", 
-    notes: "", 
-    disposition: "", 
-    tags: "" 
-  })
   const [filterDisposition, setFilterDisposition] = useState<string>("all")
   const [isRefreshing, setIsRefreshing] = useState(false)
-  
-  // Selection and bulk actions
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [searchQuery, setSearchQuery] = useState("")
-  const [showFilters, setShowFilters] = useState(false)
   const [dateFilter, setDateFilter] = useState<string>("all")
+  const [wsConnected, setWsConnected] = useState(false)
+  const wsRef = useRef<WebSocket | null>(null)
+
+  // WebSocket for real-time updates
+  useEffect(() => {
+    if (useDemo) return
+
+    const connectWebSocket = () => {
+      const wsUrl = apiUrl.replace('http://', 'ws://').replace('https://', 'wss://')
+      const ws = new WebSocket(`${wsUrl}/ws/calls`)
+
+      ws.onopen = () => {
+        console.log('📡 [CallLogs] WebSocket connected')
+        setWsConnected(true)
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          console.log('📨 [CallLogs] Message:', data.type)
+
+          // Refresh logs when call ends or is updated
+          if (data.type === 'call_ended' || data.type === 'log_updated') {
+            fetchCallLogs()
+          }
+
+          // Handle log deletion
+          if (data.type === 'log_deleted') {
+            setLogs(prev => prev.filter(log => log.call_id !== data.call_id))
+          }
+        } catch (err) {
+          console.error('WebSocket error:', err)
+        }
+      }
+
+      ws.onerror = () => setWsConnected(false)
+      ws.onclose = () => {
+        setWsConnected(false)
+        setTimeout(connectWebSocket, 3000)
+      }
+
+      wsRef.current = ws
+    }
+
+    connectWebSocket()
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close()
+      }
+    }
+  }, [apiUrl, useDemo])
 
   useEffect(() => {
     fetchCallLogs()
@@ -145,13 +164,19 @@ export default function CallLogsPage() {
       setLoading(true)
       const response = await fetch(`${apiUrl}/api/webrtc/logs`)
 
-      if (!response.ok) throw new Error("API not available")
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
       const data = await response.json()
       const callLogs = data.logs || data || []
-      setLogs(callLogs)
+      
+      // Sort by date descending
+      const sortedLogs = callLogs.sort((a: CallLog, b: CallLog) => 
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      )
+      
+      setLogs(sortedLogs)
       setUseDemo(false)
-      calculateStats(callLogs)
+      calculateStats(sortedLogs)
     } catch (error) {
       console.log("Using demo logs:", error)
       setLogs(DEMO_LOGS)
@@ -189,92 +214,6 @@ export default function CallLogsPage() {
     await fetchCallLogs()
     setSelectedIds(new Set())
     setTimeout(() => setIsRefreshing(false), 500)
-  }
-
-  const startEditing = (log: CallLog) => {
-    setEditingId(log._id)
-    setEditForm({
-      _id: log._id,
-      notes: log.notes || "",
-      disposition: log.disposition || "completed",
-      tags: log.tags?.join(", ") || "",
-    })
-  }
-
-  const cancelEdit = () => {
-    setEditingId(null)
-    setEditForm({ _id: "", notes: "", disposition: "", tags: "" })
-  }
-
-  const saveEdit = async (logId: string) => {
-    try {
-      const response = await fetch(`${apiUrl}/api/webrtc/logs/${logId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          notes: editForm.notes,
-          disposition: editForm.disposition,
-          tags: editForm.tags
-            .split(",")
-            .map((t) => t.trim())
-            .filter((t) => t),
-        }),
-      })
-
-      if (response.ok) {
-        const updatedLogs = logs.map((log) =>
-          log._id === logId
-            ? {
-                ...log,
-                notes: editForm.notes,
-                disposition: editForm.disposition,
-                tags: editForm.tags
-                  .split(",")
-                  .map((t) => t.trim())
-                  .filter((t) => t),
-              }
-            : log
-        )
-        setLogs(updatedLogs)
-        calculateStats(updatedLogs)
-        setEditingId(null)
-      } else {
-        const updatedLogs = logs.map((log) =>
-          log._id === logId
-            ? {
-                ...log,
-                notes: editForm.notes,
-                disposition: editForm.disposition,
-                tags: editForm.tags
-                  .split(",")
-                  .map((t) => t.trim())
-                  .filter((t) => t),
-              }
-            : log
-        )
-        setLogs(updatedLogs)
-        calculateStats(updatedLogs)
-        setEditingId(null)
-      }
-    } catch (error) {
-      console.error("Error saving call log:", error)
-      const updatedLogs = logs.map((log) =>
-        log._id === logId
-          ? {
-              ...log,
-              notes: editForm.notes,
-              disposition: editForm.disposition,
-              tags: editForm.tags
-                .split(",")
-                .map((t) => t.trim())
-                .filter((t) => t),
-            }
-          : log
-      )
-      setLogs(updatedLogs)
-      calculateStats(updatedLogs)
-      setEditingId(null)
-    }
   }
 
   const deleteLog = async (logId: string) => {
@@ -354,15 +293,13 @@ export default function CallLogsPage() {
       ? logs.filter(log => selectedIds.has(log._id))
       : filteredLogs
 
-    const headers = ["Call ID", "From", "To", "Duration", "Disposition", "Notes", "Tags", "Date"]
+    const headers = ["Call ID", "From", "To", "Duration", "Disposition", "Date"]
     const rows = dataToExport.map(log => [
       log.call_id,
       log.from_number,
       log.to_number,
       formatDuration(log.duration),
       log.disposition || "N/A",
-      log.notes || "",
-      log.tags?.join("; ") || "",
       new Date(log.created_at).toLocaleString()
     ])
 
@@ -386,8 +323,7 @@ export default function CallLogsPage() {
       const matchesSearch = 
         log.to_number?.toLowerCase().includes(query) ||
         log.from_number?.toLowerCase().includes(query) ||
-        log.notes?.toLowerCase().includes(query) ||
-        log.tags?.some(tag => tag.toLowerCase().includes(query))
+        log.call_id?.toLowerCase().includes(query)
       
       if (!matchesSearch) return false
     }
@@ -445,8 +381,6 @@ export default function CallLogsPage() {
     return `${mins}:${secs.toString().padStart(2, "0")}`
   }
 
-  const COLORS = ["#10b981", "#ef4444", "#f59e0b", "#3b82f6"]
-
   return (
     <main className="min-h-screen bg-background text-foreground">
       <Navigation />
@@ -455,8 +389,14 @@ export default function CallLogsPage() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-3xl font-bold">Call Logs & Analytics</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              Track and analyze your call performance
+            <p className="text-sm text-muted-foreground mt-1 flex items-center gap-2">
+              <span>Track and analyze your call performance</span>
+              {!useDemo && (
+                <span className={`inline-flex items-center gap-1 text-xs ${wsConnected ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-600 animate-pulse' : 'bg-amber-600'}`} />
+                  {wsConnected ? 'Live' : 'Offline'}
+                </span>
+              )}
             </p>
           </div>
           <div className="flex gap-2">
@@ -487,11 +427,11 @@ export default function CallLogsPage() {
           </div>
         )}
 
-        {/* Stats Cards */}
+        {/* Stats Cards - Fixed Layout */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
           <div className="bg-card rounded-lg border border-border p-4 hover:shadow-lg transition-shadow">
             <p className="text-xs text-muted-foreground uppercase font-semibold">Total Calls</p>
-            <p className="text-2xl font-bold text-accent mt-1">{stats.total}</p>
+            <p className="text-2xl font-bold text-foreground mt-1">{stats.total}</p>
           </div>
           <div className="bg-card rounded-lg border border-border p-4 hover:shadow-lg transition-shadow">
             <p className="text-xs text-muted-foreground uppercase font-semibold">Completed</p>
@@ -507,7 +447,7 @@ export default function CallLogsPage() {
           </div>
           <div className="bg-card rounded-lg border border-border p-4 hover:shadow-lg transition-shadow">
             <p className="text-xs text-muted-foreground uppercase font-semibold">No Answer</p>
-            <p className="text-2xl font-bold text-ring mt-1">{stats.noAnswer}</p>
+            <p className="text-2xl font-bold text-blue-500 mt-1">{stats.noAnswer}</p>
           </div>
           <div className="bg-card rounded-lg border border-border p-4 hover:shadow-lg transition-shadow">
             <p className="text-xs text-muted-foreground uppercase font-semibold">Avg Duration</p>
@@ -590,7 +530,7 @@ export default function CallLogsPage() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search by number, notes, or tags..."
+                  placeholder="Search by number or call ID..."
                   className="w-full pl-10 pr-4 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary"
                   aria-label="Search call logs"
                 />
@@ -684,8 +624,6 @@ export default function CallLogsPage() {
                     <th className="px-4 py-3 text-left font-semibold">To</th>
                     <th className="px-4 py-3 text-left font-semibold">Duration</th>
                     <th className="px-4 py-3 text-left font-semibold">Disposition</th>
-                    <th className="px-4 py-3 text-left font-semibold">Notes</th>
-                    <th className="px-4 py-3 text-left font-semibold">Tags</th>
                     <th className="px-4 py-3 text-left font-semibold">Date</th>
                     <th className="px-4 py-3 text-left font-semibold">Actions</th>
                   </tr>
@@ -715,130 +653,44 @@ export default function CallLogsPage() {
                       <td className="px-4 py-3 font-mono text-xs">{log.to_number}</td>
                       <td className="px-4 py-3 font-mono">{formatDuration(log.duration)}</td>
                       <td className="px-4 py-3">
-                        {editingId === log._id ? (
-                          <select
-                            value={editForm.disposition}
-                            onChange={(e) => setEditForm({ ...editForm, disposition: e.target.value })}
-                            className="px-2 py-1 bg-input border border-border rounded text-xs w-full focus:outline-none focus:ring-2 focus:ring-primary"
-                            aria-label="Edit disposition"
-                          >
-                            <option value="completed">Completed</option>
-                            <option value="failed">Failed</option>
-                            <option value="busy">Busy</option>
-                            <option value="no_answer">No Answer</option>
-                          </select>
-                        ) : (
-                          <span
-                            className={`px-2 py-1 rounded text-xs font-medium inline-block ${
-                              log.disposition === "completed"
-                                ? "bg-green-500/20 text-green-500"
-                                : log.disposition === "failed"
-                                  ? "bg-destructive/20 text-destructive"
-                                  : log.disposition === "busy"
-                                    ? "bg-yellow-500/20 text-yellow-500"
-                                    : "bg-ring/20 text-ring"
-                            }`}
-                          >
-                            {log.disposition || "N/A"}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-xs max-w-xs">
-                        {editingId === log._id ? (
-                          <input
-                            type="text"
-                            value={editForm.notes}
-                            onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
-                            className="w-full px-2 py-1 bg-input border border-border rounded text-xs focus:outline-none focus:ring-2 focus:ring-primary"
-                            placeholder="Add notes..."
-                            aria-label="Edit notes"
-                          />
-                        ) : (
-                          <span className="line-clamp-2">{log.notes || "-"}</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-xs">
-                        {editingId === log._id ? (
-                          <input
-                            type="text"
-                            value={editForm.tags}
-                            onChange={(e) => setEditForm({ ...editForm, tags: e.target.value })}
-                            className="w-full px-2 py-1 bg-input border border-border rounded text-xs focus:outline-none focus:ring-2 focus:ring-primary"
-                            placeholder="tag1, tag2"
-                            aria-label="Edit tags"
-                          />
-                        ) : (
-                          <div className="flex gap-1 flex-wrap">
-                            {log.tags && log.tags.length > 0 ? (
-                              log.tags.map((tag) => (
-                                <span 
-                                  key={tag} 
-                                  className="bg-ring/20 text-ring px-1.5 py-0.5 rounded text-xs"
-                                >
-                                  {tag}
-                                </span>
-                              ))
-                            ) : (
-                              "-"
-                            )}
-                          </div>
-                        )}
+                        <span
+                          className={`px-2 py-1 rounded text-xs font-medium inline-block ${
+                            log.disposition === "completed"
+                              ? "bg-green-500/20 text-green-500"
+                              : log.disposition === "failed"
+                                ? "bg-destructive/20 text-destructive"
+                                : log.disposition === "busy"
+                                  ? "bg-yellow-500/20 text-yellow-500"
+                                  : "bg-blue-500/20 text-blue-500"
+                          }`}
+                        >
+                          {log.disposition || "N/A"}
+                        </span>
                       </td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">
                         {new Date(log.created_at).toLocaleString()}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex gap-1 items-center">
-                          {editingId === log._id ? (
-                            <>
-                              <button
-                                onClick={() => saveEdit(log._id)}
-                                className="p-1.5 bg-accent text-accent-foreground rounded hover:opacity-80 transition-opacity"
-                                title="Save changes"
-                                aria-label="Save changes"
-                              >
-                                <Save className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={cancelEdit}
-                                className="p-1.5 bg-input border border-border rounded hover:bg-muted transition-colors"
-                                title="Cancel"
-                                aria-label="Cancel editing"
-                              >
-                                <X className="w-4 h-4" />
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                onClick={() => startEditing(log)}
-                                className="p-1.5 hover:bg-input rounded transition-colors"
-                                title="Edit"
-                                aria-label="Edit log"
-                              >
-                                <Edit className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => deleteLog(log._id)}
-                                className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
-                                title="Delete"
-                                aria-label="Delete log"
-                              >
-                                <Trash2 className="w-4 h-4 text-destructive" />
-                              </button>
-                              {log.recording_url && (
-                                <a
-                                  href={log.recording_url}
-                                  className="p-1.5 hover:bg-input rounded transition-colors"
-                                  title="Download Recording"
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  aria-label="Download recording"
-                                >
-                                  <Download className="w-4 h-4 text-primary" />
-                                </a>
-                              )}
-                            </>
+                          <button
+                            onClick={() => deleteLog(log._id)}
+                            className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
+                            title="Delete"
+                            aria-label="Delete log"
+                          >
+                            <Trash2 className="w-4 h-4 text-destructive" />
+                          </button>
+                          {log.recording_url && (
+                            <a
+                              href={log.recording_url}
+                              className="p-1.5 hover:bg-input rounded transition-colors"
+                              title="Download Recording"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              aria-label="Download recording"
+                            >
+                              <Download className="w-4 h-4 text-primary" />
+                            </a>
                           )}
                         </div>
                       </td>

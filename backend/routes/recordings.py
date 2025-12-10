@@ -1,10 +1,13 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File
-from fastapi.responses import RedirectResponse
+from fastapi.responses import StreamingResponse  # ✅ Changed this line
 from models import Recording
 from database import db
 from bson.objectid import ObjectId
 from datetime import datetime
 import logging
+import httpx   # ✅ Add this if not present
+import os      # ✅ Add this if not present
+
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +247,7 @@ async def upload_recording(call_id: str, file: UploadFile = File(...)):
 
 @router.get("/download/{call_id}")
 async def download_recording(call_id: str):
-    """Download or serve recording file"""
+    """Download recording file directly to user's PC"""
     try:
         recordings_collection = db.get_db()["recordings"]
         recording = recordings_collection.find_one({"call_id": call_id})
@@ -252,27 +255,77 @@ async def download_recording(call_id: str):
         if not recording:
             raise HTTPException(status_code=404, detail="Recording not found")
         
-        # Check if we have a local file
-        file_path = recording.get("file_path")
-        if file_path and os.path.exists(file_path):
-            logger.info(f"📁 Serving local file for call {call_id}")
-            return FileResponse(
-                path=file_path,
-                media_type="audio/mpeg",
-                filename=f"recording-{call_id}.mp3"
+        recording_id = recording.get("recording_id")
+        
+        if not recording_id:
+            logger.error(f"❌ No recording_id found for call: {call_id}")
+            raise HTTPException(status_code=404, detail="Recording ID not found")
+        
+        # ✅ Fetch fresh download URL from Telnyx API
+        telnyx_api_key = os.getenv("TELNYX_API_KEY")
+        if not telnyx_api_key:
+            raise HTTPException(status_code=500, detail="TELNYX_API_KEY not configured")
+        
+        headers = {
+            "Authorization": f"Bearer {telnyx_api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        logger.info(f"📡 Fetching recording metadata from Telnyx for: {recording_id}")
+        
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"https://api.telnyx.com/v2/recordings/{recording_id}",
+                headers=headers
             )
         
-        # Fallback to external URL (will likely be expired)
-        recording_url = recording.get("url", "")
-        if recording_url.startswith("http://") or recording_url.startswith("https://"):
-            logger.warning(f"⚠️ Redirecting to external URL (may be expired) for call {call_id}")
-            return RedirectResponse(url=recording_url)
+        if response.status_code != 200:
+            error_body = response.text
+            logger.error(f"❌ Telnyx API error {response.status_code}: {error_body}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to fetch recording from Telnyx: {response.status_code}"
+            )
         
-        raise HTTPException(status_code=404, detail="Recording file not found")
+        data = response.json().get("data", {})
+        
+        # Get fresh download URL
+        download_urls = data.get("download_urls", {})
+        recording_url = download_urls.get("mp3") or download_urls.get("wav")
+        
+        if not recording_url:
+            logger.error(f"❌ No download URL in Telnyx response for: {recording_id}")
+            raise HTTPException(status_code=404, detail="Recording URL not available")
+        
+        logger.info(f"📥 Downloading recording file from Telnyx: {call_id}")
+        
+        # ✅ Download the actual file from Telnyx
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            file_response = await client.get(recording_url)
+        
+        if file_response.status_code != 200:
+            raise HTTPException(status_code=500, detail="Failed to download recording file")
+        
+        # Get file format
+        file_format = "mp3" if "mp3" in recording_url else "wav"
+        filename = f"recording-{call_id}.{file_format}"
+        
+        logger.info(f"✅ Serving recording file: {filename} ({len(file_response.content)} bytes)")
+        
+        # ✅ Return file as downloadable response
+        return StreamingResponse(
+            iter([file_response.content]),
+            media_type=f"audio/{file_format}",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Length": str(len(file_response.content))
+            }
+        )
+        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error downloading recording: {e}")
+        logger.error(f"❌ Error downloading recording: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/stats")

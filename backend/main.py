@@ -1,6 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from fastapi.responses import StreamingResponse  # ✅ Changed this line
 import logging
 from database import db
 from datetime import datetime
@@ -9,6 +10,8 @@ import importlib.util
 import sys
 from pathlib import Path
 from routes import analytics_ws
+import httpx   # ✅ Add this if not present
+import os      # ✅ Add this if not present
 
 # ----------------------------
 # Logging Setup

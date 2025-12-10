@@ -3,6 +3,7 @@ WebRTC Bridge Module - Separate from Telnyx Integration
 Handles WebRTC + PSTN call bridging for browser audio + API endpoints for call logs
 """
 
+
 import os
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from database import db
@@ -16,8 +17,10 @@ import base64
 import json
 import asyncio
 
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
 
 # Telnyx Configuration - Using environment variables
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
@@ -25,6 +28,7 @@ TELNYX_BASE_URL = os.getenv("TELNYX_BASE_URL", "https://api.telnyx.com/v2")
 TELNYX_WEBHOOK_BASE = os.getenv("TELNYX_WEBHOOK_BASE", "http://localhost:8000")
 TELNYX_VOICE_CONNECTION_ID = os.getenv("TELNYX_VOICE_CONNECTION_ID")
 TELNYX_WEBRTC_CONNECTION_ID = os.getenv("TELNYX_WEBRTC_CONNECTION_ID")
+
 
 # Validate required environment variables
 if not TELNYX_API_KEY:
@@ -34,7 +38,9 @@ if not TELNYX_VOICE_CONNECTION_ID:
 if not TELNYX_WEBRTC_CONNECTION_ID:
     raise ValueError("TELNYX_WEBRTC_CONNECTION_ID environment variable is required")
 
+
 active_calls = {}
+
 
 # WebSocket Connection Manager for real-time updates
 class ConnectionManager:
@@ -57,6 +63,7 @@ class ConnectionManager:
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
+                logger.info(f"📤 Broadcast: {message.get('type')}")
             except Exception as e:
                 logger.error(f"Error sending to client: {e}")
                 disconnected.append(connection)
@@ -65,21 +72,26 @@ class ConnectionManager:
         for conn in disconnected:
             self.disconnect(conn)
 
+
 manager = ConnectionManager()
+
 
 # Pydantic Models
 class InitiateCallRequest(BaseModel):
     to_number: str
     from_number: str
 
+
 class LogUpdate(BaseModel):
     notes: Optional[str] = ""
     disposition: Optional[str] = ""
     tags: Optional[List[str]] = []
 
+
 # ============================================================================
 # API ENDPOINTS FOR CALL LOGS - FIXES 404 ERRORS
 # ============================================================================
+
 
 @router.get("/logs")
 async def get_call_logs(limit: int = 100, skip: int = 0):
@@ -117,6 +129,7 @@ async def get_call_logs(limit: int = 100, skip: int = 0):
         logger.error(f"❌ Error fetching logs: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/logs/{log_id}")
 async def get_call_log(log_id: str):
     """Get specific call log by ID"""
@@ -148,6 +161,7 @@ async def get_call_log(log_id: str):
     except Exception as e:
         logger.error(f"❌ Error fetching log {log_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.put("/logs/{log_id}")
 async def update_call_log(log_id: str, update: LogUpdate):
@@ -215,6 +229,7 @@ async def update_call_log(log_id: str, update: LogUpdate):
         logger.error(f"❌ Error updating log {log_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.delete("/logs/{log_id}")
 async def delete_call_log(log_id: str):
     """Delete call log"""
@@ -250,9 +265,11 @@ async def delete_call_log(log_id: str):
         logger.error(f"❌ Error deleting log {log_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # ============================================================================
 # WEBSOCKET ENDPOINT FOR REAL-TIME UPDATES
 # ============================================================================
+
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -277,9 +294,11 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"❌ WebSocket error: {str(e)}")
         manager.disconnect(websocket)
 
+
 # ============================================================================
 # CALL CONTROL ENDPOINTS (EXISTING)
 # ============================================================================
+
 
 @router.post("/initiate")
 async def initiate_call(request: InitiateCallRequest):
@@ -378,6 +397,7 @@ async def initiate_call(request: InitiateCallRequest):
         logger.error(f"❌ Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post("/webhook/telnyx")
 async def telnyx_webhook(request: Request):
     """Handle webhooks and auto-start recording when call answered"""
@@ -417,13 +437,31 @@ async def telnyx_webhook(request: Request):
                 if result.modified_count > 0:
                     logger.info(f"💾 Recording saved: {recording_url}")
                     
-                    # Broadcast recording saved event
+                    # Get updated call for broadcasting
                     updated_call = calls_collection.find_one({"telnyx_call_control_id": call_control_id})
                     if updated_call:
                         updated_call["_id"] = str(updated_call["_id"])
+                        
+                        # ✅ Broadcast recording saved event
                         await manager.broadcast({
                             "type": "recording_saved",
                             "call": updated_call
+                        })
+                        
+                        # ✅ NEW: Also broadcast recording_added for RecordingManager page
+                        await manager.broadcast({
+                            "type": "recording_added",
+                            "call_id": updated_call["call_id"],
+                            "recording": {
+                                "call_id": updated_call["call_id"],
+                                "url": recording_url,
+                                "duration": updated_call.get("duration", 0),
+                                "size": 0,  # Telnyx doesn't provide size in webhook
+                                "to_number": updated_call.get("to_number", ""),
+                                "from_number": updated_call.get("from_number", ""),
+                                "created_at": updated_call.get("recording_saved_at", datetime.utcnow()).isoformat(),
+                                "status": "completed"
+                            }
                         })
             
             return {"status": "ok"}
@@ -503,6 +541,16 @@ async def telnyx_webhook(request: Request):
                                 "recording_started_at": datetime.utcnow()
                             }}
                         )
+                        
+                        # ✅ Broadcast recording started
+                        await manager.broadcast({
+                            "type": "recording_started",
+                            "call_id": internal_call_id,
+                            "to_number": call_doc.get("to_number", "Unknown"),
+                            "from_number": call_doc.get("from_number", "Unknown"),
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                        
                 except Exception as e:
                     logger.error(f"❌ Auto-record error: {str(e)}")
         
@@ -557,6 +605,14 @@ async def telnyx_webhook(request: Request):
                 }}
             )
             
+            # ✅ Broadcast recording stopped when call ends
+            if call_doc.get("is_recording"):
+                await manager.broadcast({
+                    "type": "recording_stopped",
+                    "call_id": internal_call_id,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+            
             # Broadcast call ended
             ended_call = calls_collection.find_one({"call_id": internal_call_id})
             if ended_call:
@@ -571,6 +627,7 @@ async def telnyx_webhook(request: Request):
     except Exception as e:
         logger.error(f"❌ Webhook error: {str(e)}")
         return {"status": "error", "message": str(e)}
+
 
 # ✅ FIXED: Idempotent hangup endpoint
 @router.post("/hangup/{call_id}")
@@ -613,6 +670,14 @@ async def hangup_call(call_id: str):
                         headers=headers,
                     )
                 logger.info(f"⏹️ Recording stopped: {call_id}")
+                
+                # ✅ Broadcast recording stopped
+                await manager.broadcast({
+                    "type": "recording_stopped",
+                    "call_id": call_id,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                
             except httpx.TimeoutException:
                 logger.warning(f"⚠️ Recording stop timeout for {call_id}")
             except Exception as e:
@@ -677,10 +742,18 @@ async def hangup_call(call_id: str):
         logger.error(f"❌ Hangup error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/recording/start/{call_id}")
-async def start_recording(call_id: str):
-    """Manually start recording"""
+
+# ✅ UPDATED: Recording start endpoint - matches frontend API call
+@router.post("/recording/start")
+async def start_recording(request: Request):
+    """Manually start recording - matches frontend API structure"""
     try:
+        data = await request.json()
+        call_id = data.get("call_id")
+        
+        if not call_id:
+            raise HTTPException(status_code=400, detail="call_id is required")
+        
         calls_collection = db.get_db()["call_logs"]
         call_doc = calls_collection.find_one({"call_id": call_id})
         
@@ -717,7 +790,21 @@ async def start_recording(call_id: str):
                 }}
             )
             logger.info(f"🔴 Recording started: {call_id}")
-            return {"status": "recording_started", "call_id": call_id}
+            
+            # ✅ Broadcast to all WebSocket clients
+            await manager.broadcast({
+                "type": "recording_started",
+                "call_id": call_id,
+                "to_number": call_doc.get("to_number", "Unknown"),
+                "from_number": call_doc.get("from_number", "Unknown"),
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+            return {
+                "status": "recording_started",
+                "call_id": call_id,
+                "message": "Recording started successfully"
+            }
         else:
             error_data = response.json() if response.text else {}
             raise HTTPException(status_code=400, detail=error_data.get("errors", response.text))
@@ -728,10 +815,18 @@ async def start_recording(call_id: str):
         logger.error(f"❌ Start recording error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/recording/stop/{call_id}")
-async def stop_recording(call_id: str):
-    """Manually stop recording"""
+
+# ✅ UPDATED: Recording stop endpoint - matches frontend API call
+@router.post("/recording/stop")
+async def stop_recording(request: Request):
+    """Manually stop recording - matches frontend API structure"""
     try:
+        data = await request.json()
+        call_id = data.get("call_id")
+        
+        if not call_id:
+            raise HTTPException(status_code=400, detail="call_id is required")
+        
         calls_collection = db.get_db()["call_logs"]
         call_doc = calls_collection.find_one({"call_id": call_id})
         
@@ -760,7 +855,19 @@ async def stop_recording(call_id: str):
                 }}
             )
             logger.info(f"⏹️ Recording stopped: {call_id}")
-            return {"status": "recording_stopped", "call_id": call_id}
+            
+            # ✅ Broadcast to all WebSocket clients
+            await manager.broadcast({
+                "type": "recording_stopped",
+                "call_id": call_id,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+            return {
+                "status": "recording_stopped",
+                "call_id": call_id,
+                "message": "Recording stopped successfully"
+            }
         else:
             error_data = response.json() if response.text else {}
             raise HTTPException(status_code=400, detail=error_data.get("errors", response.text))
@@ -770,6 +877,7 @@ async def stop_recording(call_id: str):
     except Exception as e:
         logger.error(f"❌ Stop recording error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/status/{call_id}")
 async def get_status(call_id: str):

@@ -18,7 +18,7 @@ interface Recording {
   status?: string
   _id?: string
   recording_id?: string
-  is_active?: boolean // NEW: Track active recordings
+  is_active?: boolean
 }
 
 interface RecordingManagerProps {
@@ -28,7 +28,7 @@ interface RecordingManagerProps {
 export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
   const { apiUrl } = useApiConfig()
   const [recordings, setRecordings] = useState<Recording[]>([])
-  const [activeRecordings, setActiveRecordings] = useState<Recording[]>([]) // NEW
+  const [activeRecordings, setActiveRecordings] = useState<Recording[]>([])
   const [loading, setLoading] = useState(false)
   const [playingId, setPlayingId] = useState<string | null>(null)
   const [totalSize, setTotalSize] = useState(0)
@@ -42,96 +42,143 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const progressBarRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
-  // ✅ WebSocket for real-time updates
+  // ✅ WebSocket for real-time updates - FIXED connection handling
   useEffect(() => {
     if (demoMode) return
 
     const connectWebSocket = () => {
-      const wsUrl = apiUrl.replace('http://', 'ws://').replace('https://', 'wss://')
-      const ws = new WebSocket(`${wsUrl}/ws/calls`)
-
-      ws.onopen = () => {
-        console.log('📡 WebSocket connected for recordings')
-        setWsConnected(true)
+      // Clear any existing reconnect timeout
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+        reconnectTimeoutRef.current = null
       }
 
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data)
-          
-          // Handle recording started
-          if (data.type === 'recording_started') {
-            console.log('🔴 Recording started:', data.call_id)
-            setActiveRecordings(prev => [
-              ...prev,
-              {
-                call_id: data.call_id,
-                to_number: data.to_number || 'Unknown',
-                from_number: data.from_number || 'Unknown',
-                duration: 0,
-                created_at: new Date().toISOString(),
-                url: '',
-                size: 0,
-                is_active: true
-              }
-            ])
-          }
-          
-          // Handle recording stopped
-          if (data.type === 'recording_stopped') {
-            console.log('⏹️ Recording stopped:', data.call_id)
-            setActiveRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
-            fetchRecordings() // Refresh completed recordings
-          }
-          
-          // Handle recording added
-          if (data.type === 'recording_added') {
-            console.log('🎙️ New recording added:', data.call_id)
-            fetchRecordings()
-          }
-          
-          // Handle recording deleted
-          if (data.type === 'recording_deleted') {
-            console.log('🗑️ Recording deleted:', data.call_id)
-            setRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
-            
-            if (playingId === data.call_id && audioRef.current) {
-              audioRef.current.pause()
-              setPlayingId(null)
-            }
-          }
-        } catch (err) {
-          console.error('WebSocket message error:', err)
+      // Close existing connection if any
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close()
+      }
+
+      try {
+        const wsUrl = apiUrl.replace('http://', 'ws://').replace('https://', 'wss://')
+        const ws = new WebSocket(`${wsUrl}/ws/calls`)
+
+        ws.onopen = () => {
+          console.log('📡 [RecordingManager] WebSocket connected')
+          setWsConnected(true)
+          setError(null)
         }
-      }
 
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error)
-        setWsConnected(false)
-      }
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+            console.log('📨 [RecordingManager] Message:', data.type, data)
 
-      ws.onclose = () => {
-        console.log('📡 WebSocket disconnected')
+            // Handle recording started
+            if (data.type === 'recording_started') {
+              console.log('🔴 Recording started:', data.call_id)
+              
+              // Check if already in active recordings
+              setActiveRecordings(prev => {
+                const exists = prev.some(rec => rec.call_id === data.call_id)
+                if (exists) return prev
+                
+                return [
+                  ...prev,
+                  {
+                    call_id: data.call_id,
+                    to_number: data.to_number || 'Unknown',
+                    from_number: data.from_number || 'Unknown',
+                    duration: 0,
+                    created_at: new Date().toISOString(),
+                    url: '',
+                    size: 0,
+                    is_active: true
+                  }
+                ]
+              })
+            }
+
+            // Handle recording stopped
+            if (data.type === 'recording_stopped') {
+              console.log('⏹️ Recording stopped:', data.call_id)
+              setActiveRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
+            }
+
+            // Handle recording added (completed and saved)
+            if (data.type === 'recording_added') {
+              console.log('🎙️ New recording added:', data.call_id)
+              
+              // Remove from active recordings
+              setActiveRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
+              
+              // Refresh completed recordings list
+              fetchRecordings()
+            }
+
+            // Handle recording deleted
+            if (data.type === 'recording_deleted') {
+              console.log('🗑️ Recording deleted:', data.call_id)
+              setRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
+
+              if (playingId === data.call_id && audioRef.current) {
+                audioRef.current.pause()
+                setPlayingId(null)
+              }
+            }
+
+            // Handle call ended (also stop recording)
+            if (data.type === 'call_ended') {
+              console.log('📴 Call ended:', data.call_id)
+              setActiveRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
+            }
+          } catch (err) {
+            console.error('WebSocket message error:', err)
+          }
+        }
+
+        ws.onerror = (error) => {
+          console.error('❌ [RecordingManager] WebSocket error:', error)
+          setWsConnected(false)
+        }
+
+        ws.onclose = (event) => {
+          console.log('📡 [RecordingManager] WebSocket disconnected', event.code, event.reason)
+          setWsConnected(false)
+
+          // Auto-reconnect after 3 seconds
+          reconnectTimeoutRef.current = setTimeout(() => {
+            console.log('🔄 Attempting to reconnect WebSocket...')
+            connectWebSocket()
+          }, 3000)
+        }
+
+        wsRef.current = ws
+      } catch (err) {
+        console.error('Failed to create WebSocket:', err)
         setWsConnected(false)
         
-        setTimeout(() => {
-          console.log('🔄 Attempting to reconnect WebSocket...')
+        // Retry connection after 5 seconds
+        reconnectTimeoutRef.current = setTimeout(() => {
+          console.log('🔄 Retrying WebSocket connection...')
           connectWebSocket()
-        }, 3000)
+        }, 5000)
       }
-
-      wsRef.current = ws
     }
 
     connectWebSocket()
 
     return () => {
+      // Cleanup on unmount
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+      }
       if (wsRef.current) {
         wsRef.current.close()
       }
     }
-  }, [apiUrl, demoMode, playingId])
+  }, [apiUrl, demoMode])
 
   // Calculate total size
   useEffect(() => {
@@ -148,7 +195,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
   useEffect(() => {
     if (!audioRef.current) {
       const audio = new Audio()
-      
+
       const handleEnded = () => {
         setPlayingId(null)
         setCurrentTime(0)
@@ -226,12 +273,12 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
           throw new Error(`Failed to fetch recordings: ${response.status}`)
         }
         const data = await response.json()
-        
+
         const recordingsList = Array.isArray(data.recordings) ? data.recordings : []
         const validRecordings = recordingsList.filter(rec => rec.url && rec.url.trim() !== '')
-        
+
         setRecordings(validRecordings)
-        
+
         if (validRecordings.length === 0 && recordingsList.length > 0) {
           console.warn('Some recordings were filtered out due to missing URLs')
         }
@@ -286,26 +333,26 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         }
 
         setError(null)
-        
+
         const response = await fetch(recording.url, {
           mode: 'cors',
           credentials: 'omit'
         })
-        
+
         if (!response.ok) throw new Error("Download failed")
-        
+
         const blob = await response.blob()
         const url = window.URL.createObjectURL(blob)
         const link = document.createElement("a")
         link.href = url
-        
+
         const timestamp = new Date(recording.created_at).toISOString().split('T')[0]
         link.download = `recording-${timestamp}-${recording.to_number}.mp3`
-        
+
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
-        
+
         setTimeout(() => window.URL.revokeObjectURL(url), 100)
       } catch (err) {
         console.error("Error downloading recording:", err)
@@ -377,7 +424,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
     try {
       const date = new Date(dateString)
       if (isNaN(date.getTime())) return "Invalid date"
-      
+
       return date.toLocaleDateString("en-US", {
         month: "short",
         day: "numeric",
@@ -565,7 +612,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                         </span>
                       )}
                     </div>
-                    
+
                     <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground mb-2">
                       <span className="flex items-center gap-1.5">
                         <Calendar className="w-3.5 h-3.5" />
@@ -582,7 +629,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                         {formatBytes(recording.size)}
                       </span>
                     </div>
-                    
+
                     <p className="text-xs text-muted-foreground">
                       From: <span className="font-mono font-medium">{recording.from_number}</span>
                     </p>

@@ -19,6 +19,8 @@ interface Recording {
   _id?: string
   recording_id?: string
   is_active?: boolean
+  format?: string
+  channels?: string
 }
 
 interface RecordingManagerProps {
@@ -38,24 +40,23 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
   const [duration, setDuration] = useState(0)
   const [audioError, setAudioError] = useState<string | null>(null)
   const [wsConnected, setWsConnected] = useState(false)
+  const [downloading, setDownloading] = useState<string | null>(null)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const progressBarRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
-  // ✅ WebSocket for real-time updates - FIXED connection handling
+  // ✅ WebSocket for real-time updates
   useEffect(() => {
     if (demoMode) return
 
     const connectWebSocket = () => {
-      // Clear any existing reconnect timeout
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
         reconnectTimeoutRef.current = null
       }
 
-      // Close existing connection if any
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.close()
       }
@@ -75,11 +76,9 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
             const data = JSON.parse(event.data)
             console.log('📨 [RecordingManager] Message:', data.type, data)
 
-            // Handle recording started
             if (data.type === 'recording_started') {
               console.log('🔴 Recording started:', data.call_id)
               
-              // Check if already in active recordings
               setActiveRecordings(prev => {
                 const exists = prev.some(rec => rec.call_id === data.call_id)
                 if (exists) return prev
@@ -94,30 +93,26 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                     created_at: new Date().toISOString(),
                     url: '',
                     size: 0,
-                    is_active: true
+                    is_active: true,
+                    format: data.format || 'mp3',
+                    channels: data.channels || 'single'
                   }
                 ]
               })
             }
 
-            // Handle recording stopped
             if (data.type === 'recording_stopped') {
               console.log('⏹️ Recording stopped:', data.call_id)
               setActiveRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
             }
 
-            // Handle recording added (completed and saved)
             if (data.type === 'recording_added') {
               console.log('🎙️ New recording added:', data.call_id)
               
-              // Remove from active recordings
               setActiveRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
-              
-              // Refresh completed recordings list
               fetchRecordings()
             }
 
-            // Handle recording deleted
             if (data.type === 'recording_deleted') {
               console.log('🗑️ Recording deleted:', data.call_id)
               setRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
@@ -128,7 +123,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
               }
             }
 
-            // Handle call ended (also stop recording)
             if (data.type === 'call_ended') {
               console.log('📴 Call ended:', data.call_id)
               setActiveRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
@@ -147,7 +141,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
           console.log('📡 [RecordingManager] WebSocket disconnected', event.code, event.reason)
           setWsConnected(false)
 
-          // Auto-reconnect after 3 seconds
           reconnectTimeoutRef.current = setTimeout(() => {
             console.log('🔄 Attempting to reconnect WebSocket...')
             connectWebSocket()
@@ -159,7 +152,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         console.error('Failed to create WebSocket:', err)
         setWsConnected(false)
         
-        // Retry connection after 5 seconds
         reconnectTimeoutRef.current = setTimeout(() => {
           console.log('🔄 Retrying WebSocket connection...')
           connectWebSocket()
@@ -170,7 +162,6 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
     connectWebSocket()
 
     return () => {
-      // Cleanup on unmount
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
@@ -265,6 +256,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
             to_number: "+12125551001",
             from_number: "+12125551234",
             status: "completed",
+            format: "mp3",
+            channels: "dual"
           },
         ])
       } else {
@@ -324,6 +317,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
     [apiUrl, demoMode, playingId]
   )
 
+  // ✅ FIXED: Download through backend with proper format detection
   const handleDownload = useCallback(
     async (recording: Recording) => {
       try {
@@ -333,33 +327,60 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         }
 
         setError(null)
+        setDownloading(recording.call_id)
+        console.log(`📥 Downloading recording: ${recording.call_id}`)
 
-        const response = await fetch(recording.url, {
-          mode: 'cors',
-          credentials: 'omit'
-        })
+        // ✅ Use backend download endpoint
+        const response = await fetch(
+          `${apiUrl}/api/calls/recordings/download/${encodeURIComponent(recording.call_id)}`,
+          {
+            method: 'GET',
+          }
+        )
 
-        if (!response.ok) throw new Error("Download failed")
+        if (!response.ok) {
+          throw new Error(`Download failed: ${response.status} ${response.statusText}`)
+        }
 
+        // Get the blob from response
         const blob = await response.blob()
+        
+        // Detect file extension from Content-Type, recording format, or URL
+        let extension = 'mp3'
+        const contentType = response.headers.get('content-type') || ''
+        
+        if (contentType.includes('wav') || recording.format === 'wav' || recording.url?.includes('.wav')) {
+          extension = 'wav'
+        } else if (contentType.includes('mp3') || recording.format === 'mp3' || recording.url?.includes('.mp3')) {
+          extension = 'mp3'
+        }
+        
+        // Create download link
         const url = window.URL.createObjectURL(blob)
         const link = document.createElement("a")
         link.href = url
 
+        // Generate filename with proper extension
         const timestamp = new Date(recording.created_at).toISOString().split('T')[0]
-        link.download = `recording-${timestamp}-${recording.to_number}.mp3`
+        const channels = recording.channels === 'dual' ? '-stereo' : ''
+        link.download = `recording-${timestamp}-${recording.to_number}${channels}.${extension}`
 
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
 
+        // Cleanup
         setTimeout(() => window.URL.revokeObjectURL(url), 100)
+        
+        console.log(`✅ Recording downloaded: ${link.download}`)
       } catch (err) {
-        console.error("Error downloading recording:", err)
-        setError(err instanceof Error ? err.message : "Failed to download recording")
+        console.error("❌ Error downloading recording:", err)
+        setError(err instanceof Error ? err.message : "Failed to download recording. Please try again.")
+      } finally {
+        setDownloading(null)
       }
     },
-    [demoMode]
+    [apiUrl, demoMode]
   )
 
   const handleTogglePlay = useCallback(
@@ -481,7 +502,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                 {activeRecordings.length} Active Recording{activeRecordings.length > 1 ? 's' : ''}
               </p>
               <p className="text-xs text-muted-foreground">
-                {activeRecordings.map(r => r.to_number).join(', ')}
+                {activeRecordings.map(r => `${r.to_number} (${r.channels === 'dual' ? 'Stereo' : 'Mono'})`).join(', ')}
               </p>
             </div>
           </div>
@@ -611,6 +632,13 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                           Playing
                         </span>
                       )}
+                      {/* Format & Channel Badge */}
+                      {(recording.format || recording.channels) && (
+                        <span className="text-xs bg-secondary px-2 py-1 rounded-full font-medium text-muted-foreground">
+                          {recording.format?.toUpperCase() || 'MP3'}
+                          {recording.channels === 'dual' && ' • Stereo'}
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground mb-2">
@@ -685,8 +713,13 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                       variant="secondary"
                       title="Download"
                       className="flex-1 sm:flex-none"
+                      disabled={downloading === recording.call_id}
                     >
-                      <Download className="w-4 h-4" />
+                      {downloading === recording.call_id ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Download className="w-4 h-4" />
+                      )}
                     </Button>
 
                     <Button

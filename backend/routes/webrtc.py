@@ -280,7 +280,7 @@ async def list_recordings():
 
 @router.get("/recordings/download/{call_id}")
 async def download_recording(call_id: str):
-    """Download recording with proper MIME type and CORS headers"""
+    """Download recording with proper MIME type and CORS headers for playback"""
     try:
         recordings_collection = db.get_db()["recordings"]
         recording = recordings_collection.find_one({"call_id": call_id})
@@ -296,16 +296,13 @@ async def download_recording(call_id: str):
         
         logger.info(f"📥 Fetching recording from Telnyx: {recording_url[:100]}...")
         
-        # ✅ Fetch from Telnyx with proper timeout and redirect handling
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
             response = await client.get(recording_url)
             response.raise_for_status()
         
-        # ✅ Determine correct MIME type - WAV format
         format_type = recording.get("format", "wav").lower()
         content_type = "audio/wav" if format_type == "wav" else "audio/mpeg"
         
-        # ✅ Detect dual-channel for filename
         channels = recording.get("channels", "single")
         is_stereo = str(channels).lower() in ["dual", "2", "stereo"]
         channel_suffix = "-stereo" if is_stereo else "-mono"
@@ -318,10 +315,12 @@ async def download_recording(call_id: str):
             content=response.content,
             media_type=content_type,
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Access-Control-Allow-Origin": "*",  # ✅ Adjust for production
-                "Access-Control-Expose-Headers": "Content-Disposition",
-                "Cache-Control": "public, max-age=3600"
+                "Content-Disposition": f'inline; filename="{filename}"',  # ✅ Changed to 'inline'
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Expose-Headers": "Content-Disposition, Content-Length",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+                "Cache-Control": "public, max-age=3600",
+                "Accept-Ranges": "bytes"
             }
         )
         
@@ -331,6 +330,7 @@ async def download_recording(call_id: str):
     except Exception as e:
         logger.error(f"❌ Download error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.delete("/recordings/{call_id}/delete")
 async def delete_recording(call_id: str):

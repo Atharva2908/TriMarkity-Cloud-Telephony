@@ -839,8 +839,14 @@ export default function CallLogsPage() {
                                 </a>
                               )}
                             </>
-
-      </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       </div>

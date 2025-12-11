@@ -244,7 +244,7 @@ async def list_recordings():
     try:
         recordings_collection = db.get_db()["recordings"]
         
-        # ✅ Only fetch recordings with duration > 0 and valid URL
+        # Only fetch recordings with duration > 0 and valid URL
         recordings_cursor = recordings_collection.find({
             "duration": {"$gt": 0},
             "url": {"$ne": None, "$ne": ""}
@@ -372,7 +372,7 @@ async def cleanup_duplicate_recordings():
     try:
         recordings_collection = db.get_db()["recordings"]
         
-        # ✅ Delete recordings with no duration or no URL
+        # Delete recordings with no duration or no URL
         result = recordings_collection.delete_many({
             "$or": [
                 {"duration": {"$lte": 0}},
@@ -513,9 +513,13 @@ async def initiate_call(request: InitiateCallRequest):
         logger.error(f"❌ Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ============================================================================
+# TELNYX WEBHOOK
+# ============================================================================
+
 @router.post("/webhook/telnyx")
 async def telnyx_webhook(request: Request):
-    """Handle webhooks - auto-start recording with duplicate prevention"""
+    """Handle webhooks - auto-start recording with duplicate prevention and single-file storage"""
     payload = await request.json()
     
     try:
@@ -583,7 +587,7 @@ async def telnyx_webhook(request: Request):
                 
                 return {"status": "ok"}
         
-        # ✅ Handle call.recording.saved - SAVE TO RECORDINGS COLLECTION (PREVENT DUPLICATES)
+        # Handle call.recording.saved - SAVE TO RECORDINGS COLLECTION (PREVENT DUPLICATES, ONE FILE PER CALL)
         if event_type == "call.recording.saved":
             call_control_id = event_payload.get("call_control_id")
             recording_urls = event_payload.get("recording_urls", {})
@@ -600,7 +604,7 @@ async def telnyx_webhook(request: Request):
             if str(channels) not in ["dual", "2", "stereo"]:
                 logger.error(f"❌ CHANNEL MISMATCH! Expected: dual, Got: {channels}")
             else:
-                logger.info(f"✅ CONFIRMED: Dual-channel recording received!")
+                logger.info("✅ CONFIRMED: Dual-channel recording received!")
             
             logger.info("=" * 80)
             
@@ -616,6 +620,18 @@ async def telnyx_webhook(request: Request):
                 call_log = calls_collection.find_one({"telnyx_call_control_id": call_control_id})
                 
                 if call_log:
+                    recordings_collection = db.get_db()["recordings"]
+
+                    # 🔐 HARD GUARANTEE: only one recording row per logical call_id
+                    existing_rec = recordings_collection.find_one({"call_id": call_log["call_id"]})
+                    if existing_rec:
+                        logger.info(
+                            f"⚠️ Recording already stored for call_id={call_log['call_id']} "
+                            f"(existing recording_id={existing_rec.get('recording_id')}), "
+                            f"skipping additional leg recording from call_control_id={call_control_id}"
+                        )
+                        return {"status": "ok", "message": "duplicate_recording_ignored"}
+
                     recording_format = "wav" if ".wav" in recording_url.lower() else "mp3"
                     
                     calls_collection.update_one(
@@ -629,7 +645,6 @@ async def telnyx_webhook(request: Request):
                         }}
                     )
                     
-                    recordings_collection = db.get_db()["recordings"]
                     recording_data = {
                         "call_id": call_log["call_id"],
                         "recording_id": event_payload.get("recording_id", call_control_id),
@@ -646,14 +661,14 @@ async def telnyx_webhook(request: Request):
                         "filename": f"recording-{call_log['call_id']}.{recording_format}"
                     }
                     
-                    # ✅ Upsert with call_id as unique key (prevents duplicates)
+                    # Upsert with call_id as unique key (prevents duplicates)
                     result = recordings_collection.update_one(
                         {"call_id": call_log["call_id"]},
                         {"$set": recording_data},
                         upsert=True
                     )
                     
-                    logger.info(f"💾 Recording saved to DB: {call_log['call_id']}")
+                    logger.info(f"💾 Recording saved to DB (single file per call): {call_log['call_id']}")
                     logger.info(f"   Format: {recording_format}, Channels: {channels}")
                     
                     if result.upserted_id:
@@ -718,7 +733,7 @@ async def telnyx_webhook(request: Request):
             "Content-Type": "application/json"
         }
         
-        # ✅ ATOMIC UPDATE: Prevent duplicate recording starts
+        # ATOMIC UPDATE: Prevent duplicate recording starts
         if event_type == "call.answered":
             call_control_id = event_payload.get("call_control_id")
             
@@ -782,7 +797,7 @@ async def telnyx_webhook(request: Request):
                     response_data = record_response.json()
                     actual_data = response_data.get("data", {})
                     
-                    logger.info(f"✅ Recording started successfully")
+                    logger.info("✅ Recording started successfully")
                     logger.info(f"   Format: {actual_data.get('format', 'N/A')}, Channels: {actual_data.get('channels', 'N/A')}")
                     
                     calls_collection.update_one(
@@ -891,6 +906,10 @@ async def telnyx_webhook(request: Request):
     except Exception as e:
         logger.error(f"❌ Webhook error: {str(e)}")
         return {"status": "error", "message": str(e)}
+
+# ============================================================================
+# HANGUP + MANUAL RECORDING CONTROL
+# ============================================================================
 
 @router.post("/hangup/{call_id}")
 async def hangup_call(call_id: str):

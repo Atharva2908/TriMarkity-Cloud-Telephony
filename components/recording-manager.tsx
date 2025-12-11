@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useCallback, useEffect, useRef } from "react"
-import { Download, Trash2, Play, Pause, RefreshCw, Loader2, Volume2, Calendar, Clock, HardDrive, AlertCircle, Circle, Sparkles } from "lucide-react"
+import { Download, Trash2, Play, Pause, RefreshCw, Loader2, Volume2, Calendar, Clock, HardDrive, AlertCircle, Circle, Sparkles, PhoneIncoming, PhoneOutgoing } from "lucide-react"
 import { useApiConfig } from "@/hooks/use-api-config"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -89,9 +89,14 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
             const data = JSON.parse(event.data)
 
             if (data.type === 'recording_started') {
+              console.log('🔴 Recording started:', data.call_id)
               setActiveRecordings(prev => {
+                // ✅ Prevent duplicate active recordings for same call_id
                 const exists = prev.some(rec => rec.call_id === data.call_id)
-                if (exists) return prev
+                if (exists) {
+                  console.log('⚠️ Active recording already exists for', data.call_id)
+                  return prev
+                }
                 
                 return [
                   ...prev,
@@ -113,15 +118,19 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
             }
 
             if (data.type === 'recording_stopped') {
+              console.log('⏹️ Recording stopped:', data.call_id)
               setActiveRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
             }
 
             if (data.type === 'recording_added') {
+              console.log('💾 Recording saved:', data.call_id)
+              // Remove from active and refresh list to get the saved recording
               setActiveRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
               fetchRecordings()
             }
 
             if (data.type === 'recording_deleted') {
+              console.log('🗑️ Recording deleted:', data.call_id)
               setRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
               if (playingId === data.call_id && audioRef.current) {
                 audioRef.current.pause()
@@ -130,6 +139,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
             }
 
             if (data.type === 'call_ended') {
+              console.log('📴 Call ended:', data.call_id)
+              // Remove from active recordings when call ends
               setActiveRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
             }
           } catch (err) {
@@ -255,12 +266,15 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         const data = await response.json()
 
         const recordingsList = Array.isArray(data.recordings) ? data.recordings : []
+        
+        // ✅ Only show recordings with valid URL and duration > 0 (backend already filters this)
         const validRecordings = recordingsList.filter(rec => 
           rec.url && 
           rec.url.trim() !== '' && 
           rec.duration > 0
         )
 
+        console.log(`📼 Loaded ${validRecordings.length} valid recordings`)
         setRecordings(validRecordings)
       }
     } catch (err) {
@@ -289,6 +303,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
       }
 
       const result = await response.json()
+      
+      console.log(`🧹 Cleaned up ${result.deleted_count} empty recordings`)
       
       if (result.deleted_count > 0) {
         setError(null)
@@ -377,7 +393,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
         const timestamp = new Date(recording.created_at).toISOString().split('T')[0]
         const channelSuffix = isDualChannel(recording.channels) ? '-STEREO' : '-MONO'
-        link.download = `${timestamp}-${recording.to_number}${channelSuffix}.${extension}`
+        const directionPrefix = recording.direction?.toUpperCase() || 'CALL'
+        link.download = `${directionPrefix}-${timestamp}-${recording.to_number}${channelSuffix}.${extension}`
 
         document.body.appendChild(link)
         link.click()
@@ -517,7 +534,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
               Recording Manager
             </h2>
             <div className="text-sm text-muted-foreground mt-1 flex items-center gap-2">
-              <span>Complete conversation recordings • Dual-channel stereo</span>
+              <span>Complete conversation recordings • Dual-channel stereo • One file per call</span>
               {!demoMode && (
                 <span className={`inline-flex items-center gap-1 text-xs ${wsConnected ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>
                   <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-600 animate-pulse' : 'bg-amber-600'}`} />
@@ -557,7 +574,10 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                 {activeRecordings.length} Recording{activeRecordings.length > 1 ? 's' : ''} in Progress
               </p>
               <p className="text-xs text-muted-foreground">
-                {activeRecordings.map(r => `${r.to_number} (Complete Conversation)`).join(', ')}
+                {activeRecordings.map(r => {
+                  const dirIcon = r.direction === 'inbound' ? '📲' : '📞'
+                  return `${dirIcon} ${r.to_number} (Complete Conversation • Dual Channel)`
+                }).join(', ')}
               </p>
             </div>
           </div>
@@ -663,7 +683,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                 {searchTerm ? "No recordings found matching your search" : "No recordings yet"}
               </p>
               <p className="text-sm text-muted-foreground mt-1">
-                {searchTerm ? "Try a different search term" : "Complete conversation recordings will appear here automatically"}
+                {searchTerm ? "Try a different search term" : "Complete conversation recordings will appear here automatically (one file per call)"}
               </p>
             </Card>
           ) : (
@@ -682,6 +702,27 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <p className="font-bold font-mono text-lg text-foreground">{recording.to_number}</p>
                       
+                      {/* Direction Badge */}
+                      {recording.direction && (
+                        <span className={`text-xs px-2 py-1 rounded-full font-medium flex items-center gap-1 ${
+                          recording.direction === 'inbound'
+                            ? 'bg-blue-500/20 text-blue-700 dark:text-blue-400 border border-blue-500/30'
+                            : 'bg-green-500/20 text-green-700 dark:text-green-400 border border-green-500/30'
+                        }`}>
+                          {recording.direction === 'inbound' ? (
+                            <>
+                              <PhoneIncoming className="w-3 h-3" />
+                              Inbound
+                            </>
+                          ) : (
+                            <>
+                              <PhoneOutgoing className="w-3 h-3" />
+                              Outbound
+                            </>
+                          )}
+                        </span>
+                      )}
+                      
                       {playingId === recording.call_id && (
                         <span className="text-xs bg-primary/20 text-primary px-2 py-1 rounded-full flex items-center gap-1.5 font-medium">
                           <span className="w-2 h-2 bg-primary rounded-full animate-pulse" />
@@ -689,6 +730,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                         </span>
                       )}
                       
+                      {/* Format & Channel Badge */}
                       {(recording.format || recording.channels) && (
                         <span className={`text-xs px-2 py-1 rounded-full font-medium ${
                           isDualChannel(recording.channels) 

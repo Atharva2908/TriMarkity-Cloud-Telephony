@@ -9,7 +9,7 @@ const _geist = Geist({ subsets: ["latin"] })
 const _geistMono = Geist_Mono({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "Telnyx Calling System",
+  title: "ctp.trimarkity.app",
   description: "Modern outbound calling platform",
   generator: "v0.app",
   icons: {

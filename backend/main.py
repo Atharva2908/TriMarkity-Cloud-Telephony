@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # ----------------------------
 # Configuration
 # ----------------------------
-APP_NAME = os.getenv("APP_NAME", "Telnyx Calling System")
+APP_NAME = os.getenv("APP_NAME", "ctp.trimarkity.app")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
 # CORS Configuration

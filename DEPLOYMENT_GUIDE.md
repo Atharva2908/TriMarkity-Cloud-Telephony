@@ -137,7 +137,7 @@ JWT_SECRET=your-secret-key-here
 JWT_ALGORITHM=HS256
 
 # App Config
-APP_NAME=Telnyx Calling System
+APP_NAME=ctp.trimarkity.app
 CORS_ORIGINS=http://localhost:3000,http://localhost:3001,https://your-frontend.com
 
 # Frontend

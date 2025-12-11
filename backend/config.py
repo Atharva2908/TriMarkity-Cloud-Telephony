@@ -7,7 +7,7 @@ load_dotenv()
 
 class Config:
     # Application
-    APP_NAME = os.getenv("APP_NAME", "Telnyx Calling System")
+    APP_NAME = os.getenv("APP_NAME", "ctp.trimarkity.app")
     ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
     DEBUG = os.getenv("DEBUG", "true").lower() == "true"
     

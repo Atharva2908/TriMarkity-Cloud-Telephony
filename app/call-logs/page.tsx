@@ -24,11 +24,10 @@ import {
   X, 
   CheckSquare, 
   Square,
-  Filter,
   Search,
-  Calendar,
   FileDown,
-  MoreVertical
+  PhoneIncoming,
+  PhoneOutgoing
 } from "lucide-react"
 import { useApiConfig } from "@/hooks/use-api-config"
 
@@ -41,6 +40,7 @@ const DEMO_LOGS = [
     duration: 245,
     status: "ended",
     disposition: "completed",
+    direction: "outbound",
     notes: "Customer agreed to follow-up",
     tags: ["qualified", "follow-up"],
     recording_url: "https://example.com/recording1.wav",
@@ -54,6 +54,7 @@ const DEMO_LOGS = [
     duration: 0,
     status: "ended",
     disposition: "no_answer",
+    direction: "outbound",
     notes: "Left voicemail",
     tags: ["voicemail"],
     created_at: new Date(Date.now() - 43200000).toISOString(),
@@ -66,6 +67,7 @@ const DEMO_LOGS = [
     duration: 180,
     status: "ended",
     disposition: "completed",
+    direction: "inbound",
     notes: "Scheduled demo for next week",
     tags: ["demo", "scheduled"],
     recording_url: "https://example.com/recording3.wav",
@@ -79,6 +81,7 @@ const DEMO_LOGS = [
     duration: 0,
     status: "ended",
     disposition: "busy",
+    direction: "outbound",
     notes: "Line was busy",
     tags: ["retry"],
     created_at: new Date(Date.now() - 3600000).toISOString(),
@@ -93,6 +96,7 @@ interface CallLog {
   duration: number
   status: string
   disposition?: string
+  direction?: string
   notes?: string
   tags?: string[]
   recording_url?: string
@@ -133,7 +137,6 @@ export default function CallLogsPage() {
   // Selection and bulk actions
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [searchQuery, setSearchQuery] = useState("")
-  const [showFilters, setShowFilters] = useState(false)
   const [dateFilter, setDateFilter] = useState<string>("all")
 
   useEffect(() => {
@@ -162,15 +165,15 @@ export default function CallLogsPage() {
     }
   }
 
+  // ✅ FIXED: Only count by disposition, not status
   const calculateStats = (callLogs: CallLog[]) => {
-    const completed = callLogs.filter((log) => 
-      log.disposition === "completed" || log.status === "ended"
-    ).length
+    const completed = callLogs.filter((log) => log.disposition === "completed").length
     const failed = callLogs.filter((log) => log.disposition === "failed").length
     const busy = callLogs.filter((log) => log.disposition === "busy").length
     const noAnswer = callLogs.filter((log) => log.disposition === "no_answer").length
     
     const totalDuration = callLogs.reduce((sum, log) => sum + (log.duration || 0), 0)
+    // Only calculate average for completed calls
     const avgDuration = completed > 0 ? Math.floor(totalDuration / completed) : 0
 
     setStats({
@@ -349,14 +352,16 @@ export default function CallLogsPage() {
     })
   }
 
+  // ✅ FIXED: Export from filteredLogs when items are selected
   const exportToCSV = () => {
     const dataToExport = selectedIds.size > 0 
-      ? logs.filter(log => selectedIds.has(log._id))
+      ? filteredLogs.filter(log => selectedIds.has(log._id))
       : filteredLogs
 
-    const headers = ["Call ID", "From", "To", "Duration", "Disposition", "Notes", "Tags", "Date"]
+    const headers = ["Call ID", "Direction", "From", "To", "Duration", "Disposition", "Notes", "Tags", "Date"]
     const rows = dataToExport.map(log => [
       log.call_id,
+      log.direction === "inbound" ? "Inbound" : "Outbound",
       log.from_number,
       log.to_number,
       formatDuration(log.duration),
@@ -444,8 +449,6 @@ export default function CallLogsPage() {
     const secs = seconds % 60
     return `${mins}:${secs.toString().padStart(2, "0")}`
   }
-
-  const COLORS = ["#10b981", "#ef4444", "#f59e0b", "#3b82f6"]
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -673,13 +676,14 @@ export default function CallLogsPage() {
                         title={selectedIds.size === filteredLogs.length ? "Deselect all" : "Select all"}
                         aria-label={selectedIds.size === filteredLogs.length ? "Deselect all rows" : "Select all rows"}
                       >
-                        {selectedIds.size === filteredLogs.length ? (
+                        {selectedIds.size === filteredLogs.length && filteredLogs.length > 0 ? (
                           <CheckSquare className="w-5 h-5 text-primary" />
                         ) : (
                           <Square className="w-5 h-5" />
                         )}
                       </button>
                     </th>
+                    <th className="px-4 py-3 text-left font-semibold">Direction</th>
                     <th className="px-4 py-3 text-left font-semibold">From</th>
                     <th className="px-4 py-3 text-left font-semibold">To</th>
                     <th className="px-4 py-3 text-left font-semibold">Duration</th>
@@ -710,6 +714,25 @@ export default function CallLogsPage() {
                             <Square className="w-5 h-5" />
                           )}
                         </button>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`px-2 py-1 rounded text-xs font-medium inline-flex items-center gap-1 ${
+                          log.direction === 'inbound' 
+                            ? 'bg-blue-500/20 text-blue-500' 
+                            : 'bg-green-500/20 text-green-500'
+                        }`}>
+                          {log.direction === 'inbound' ? (
+                            <>
+                              <PhoneIncoming className="w-3 h-3" />
+                              In
+                            </>
+                          ) : (
+                            <>
+                              <PhoneOutgoing className="w-3 h-3" />
+                              Out
+                            </>
+                          )}
+                        </span>
                       </td>
                       <td className="px-4 py-3 font-mono text-xs">{log.from_number}</td>
                       <td className="px-4 py-3 font-mono text-xs">{log.to_number}</td>

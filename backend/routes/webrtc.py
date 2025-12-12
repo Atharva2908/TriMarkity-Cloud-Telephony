@@ -564,17 +564,17 @@ async def telnyx_webhook(request: Request):
                 }
                 calls_collection.insert_one(call_doc)
                 
+# Start DIRECT call recording (dual-channel works here!)
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    await client.post(
-                        f"{TELNYX_BASE_URL}/calls/{call_control_id}/actions/answer",
-                        headers=headers,
-                        json={
-                            "client_state": base64.b64encode(json.dumps({
-                                "internal_call_id": internal_call_id,
-                                "leg": "inbound"
-                            }).encode()).decode()
-                        }
-                    )
+                 record_response = await client.post(
+                f"{TELNYX_BASE_URL}/calls/{call_control_id}/actions/record_start",
+                headers=headers,
+                json={
+                    "format": "wav",
+                    "channels": "dual",
+        }
+    )
+
                 
                 logger.info(f"✅ Inbound call answered: {call_control_id}")
                 

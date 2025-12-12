@@ -137,7 +137,7 @@ async def send_dtmf(request: DTMFRequest):
             "message": f"DTMF tones '{request.digits}' sent successfully"
         }
         
-    except telnyx.error.TelnyxError as e:
+    except Exception as e:
         logger.error(f"❌ Telnyx DTMF error: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Telnyx error: {str(e)}")
     except Exception as e:

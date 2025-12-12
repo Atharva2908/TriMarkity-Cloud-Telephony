@@ -511,7 +511,7 @@ async def initiate_call(request: InitiateCallRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# 🎤 CONFERENCE-BASED WEBHOOK (SINGLE MIXED MONO FILE)
+# 🎤 CONFERENCE-BASED WEBHOOK (SINGLE MIXED MONO FILE) - FIXED
 # ============================================================================
 
 @router.post("/webhook/telnyx")
@@ -598,6 +598,7 @@ async def telnyx_webhook(request: Request):
             logger.info(f"   Recording ID: {event_payload.get('recording_id', 'N/A')}")
             logger.info(f"   Channels: {event_payload.get('channels', 'N/A')}")
             logger.info(f"   Format: {event_payload.get('format', 'N/A')}")
+            logger.info(f"   Duration: {event_payload.get('duration_millis', 0) / 1000}s")
             logger.info("=" * 80)
             
             recording_url = (
@@ -654,6 +655,10 @@ async def telnyx_webhook(request: Request):
                         "call_id": call_log["call_id"],
                         "recording": recording_data
                     })
+                else:
+                    logger.warning(f"⚠️ No call log found for conference: {conference_id}")
+            else:
+                logger.error(f"❌ No recording URL in webhook for conference: {conference_id}")
             
             return {"status": "ok"}
         
@@ -685,9 +690,10 @@ async def telnyx_webhook(request: Request):
             conference_name = f"conf-{internal_call_id}"
             
             if internal_call_id not in active_conferences:
-                # 🎤 FIRST LEG - CREATE CONFERENCE WITH AUTO-RECORDING
+                # 🎤 FIRST LEG - CREATE CONFERENCE
                 logger.info(f"🎤 Creating NEW conference: {conference_name}")
                 
+                # ✅ STEP 1: Create conference (without recording params)
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     conf_response = await client.post(
                         f"{TELNYX_BASE_URL}/conferences",
@@ -695,10 +701,7 @@ async def telnyx_webhook(request: Request):
                         json={
                             "call_control_id": call_control_id,
                             "name": conference_name,
-                            "beep_enabled": "never",
-                            "record": "record-from-start",  # ✅ AUTO-START RECORDING
-                            "record_format": "wav",
-                            "record_channels": "single"  # ✅ MIXED MONO (both voices in one channel)
+                            "beep_enabled": "never"
                         }
                     )
                 
@@ -715,31 +718,70 @@ async def telnyx_webhook(request: Request):
                     
                     logger.info(f"✅ Conference created: {conference_id}")
                     logger.info(f"   Participant: {call_control_id} ({direction})")
-                    logger.info("🔴 Conference recording started (SINGLE-CHANNEL MIXED MONO)")
-                    logger.info("   📢 Both participants mixed into ONE audio track")
                     
+                    # ✅ Update database with conference info
                     calls_collection.update_one(
                         {"call_id": internal_call_id},
                         {"$set": {
                             "status": "active",
                             "answered_at": datetime.utcnow(),
                             "conference_id": conference_id,
-                            "recording_type": "conference",
-                            "is_recording": True,
-                            "recording_requested": True,
-                            "recording_started_at": datetime.utcnow(),
-                            "recording_channels": "single"
+                            "recording_type": "conference"
                         }}
                     )
                     
-                    await manager.broadcast({
-                        "type": "recording_started",
-                        "call_id": internal_call_id,
-                        "recording_type": "conference",
-                        "channels": "single"
-                    })
+                    # ✅ STEP 2: Wait briefly, then start recording
+                    await asyncio.sleep(0.5)
+                    
+                    # ✅ START RECORDING ON CONFERENCE
+                    try:
+                        async with httpx.AsyncClient(timeout=10.0) as recording_client:
+                            record_response = await recording_client.post(
+                                f"{TELNYX_BASE_URL}/conferences/{conference_id}/actions/record_start",
+                                headers=headers,
+                                json={
+                                    "format": "wav",
+                                    "channels": "single"  # ✅ MIXED MONO
+                                }
+                            )
+                        
+                        logger.info(f"📤 Recording start request sent: {record_response.status_code}")
+                        logger.info(f"   Response: {record_response.text[:200]}")
+                        
+                        # ✅ CHECK RESPONSE STATUS
+                        if record_response.status_code == 200:
+                            record_data = record_response.json().get("data", {})
+                            
+                            logger.info("🔴 Conference recording started (SINGLE-CHANNEL MIXED MONO)")
+                            logger.info("   📢 Both participants mixed into ONE audio track")
+                            
+                            calls_collection.update_one(
+                                {"call_id": internal_call_id},
+                                {"$set": {
+                                    "is_recording": True,
+                                    "recording_requested": True,
+                                    "recording_started_at": datetime.utcnow(),
+                                    "recording_channels": "single"
+                                }}
+                            )
+                            
+                            await manager.broadcast({
+                                "type": "recording_started",
+                                "call_id": internal_call_id,
+                                "recording_type": "conference",
+                                "channels": "single"
+                            })
+                        else:
+                            logger.error(f"❌ Recording start failed: {record_response.status_code}")
+                            logger.error(f"   Response: {record_response.text}")
+                            
+                    except Exception as e:
+                        logger.error(f"❌ Exception starting recording: {str(e)}")
+                        import traceback
+                        logger.error(traceback.format_exc())
                 else:
-                    logger.error(f"❌ Failed to create conference: {conf_response.text}")
+                    logger.error(f"❌ Failed to create conference: {conf_response.status_code}")
+                    logger.error(f"   Response: {conf_response.text}")
             
             else:
                 # 🔗 SECOND LEG - JOIN EXISTING CONFERENCE
@@ -755,9 +797,7 @@ async def telnyx_webhook(request: Request):
                         headers=headers,
                         json={
                             "call_control_id": call_control_id,
-                            "conference_name": conference_name,
-                            "start_conference_on_enter": True,
-                            "muted": False
+                            "conference_name": conference_name
                         }
                     )
                 

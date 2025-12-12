@@ -511,12 +511,12 @@ async def initiate_call(request: InitiateCallRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# 🔴 DIRECT CALL RECORDING WEBHOOK (DUAL CHANNEL - COMPLETE CONVERSATION)
+# 🔴 WEBHOOK HANDLER - DUAL CHANNEL RECORDING (BOTH VOICES)
 # ============================================================================
 
 @router.post("/webhook/telnyx")
 async def telnyx_webhook(request: Request):
-    """Handle webhooks - Direct call recording with dual channel (both voices, complete conversation)"""
+    """Handle webhooks - Dual channel recording (both voices)"""
     global active_conferences
     
     payload = await request.json()
@@ -587,7 +587,7 @@ async def telnyx_webhook(request: Request):
                 
                 return {"status": "ok"}
         
-        # ===== 🔴 CALL RECORDING SAVED (Direct Recording) =====
+        # ===== 🔴 CALL RECORDING SAVED =====
         if event_type == "call.recording.saved":
             call_control_id = event_payload.get("call_control_id")
             recording_urls = event_payload.get("recording_urls", {})
@@ -658,8 +658,6 @@ async def telnyx_webhook(request: Request):
                     })
                 else:
                     logger.warning(f"⚠️ No call log found for call_control_id: {call_control_id}")
-            else:
-                logger.error(f"❌ No recording URL in webhook for call: {call_control_id}")
             
             return {"status": "ok"}
         
@@ -681,7 +679,7 @@ async def telnyx_webhook(request: Request):
             logger.warning(f"⚠️ Call not found: {internal_call_id}")
             return {"status": "call not found"}
         
-        # ===== 🔴 CALL ANSWERED - START RECORDING IMMEDIATELY =====
+        # ===== 🔴 CALL ANSWERED - START RECORDING =====
         if event_type == "call.answered":
             call_control_id = event_payload.get("call_control_id")
             direction = client_state.get("leg", "outbound")
@@ -697,9 +695,12 @@ async def telnyx_webhook(request: Request):
                 }}
             )
             
-            # ✅ START RECORDING IMMEDIATELY (Complete conversation from answer to hangup)
+            # ✅ START RECORDING IMMEDIATELY
             try:
-                logger.info(f"🔴 Starting DUAL-CHANNEL recording for {internal_call_id}")
+                await asyncio.sleep(0.5)  # Brief delay to ensure call is fully established
+                
+                logger.info(f"🔴 Starting recording for {internal_call_id}...")
+                logger.info(f"⚠️ IMPORTANT: Dual-channel MUST be enabled in Telnyx Portal!")
                 
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     record_response = await client.post(
@@ -707,16 +708,18 @@ async def telnyx_webhook(request: Request):
                         headers=headers,
                         json={
                             "format": "wav",
-                            "channels": "dual",  # ✅ DUAL CHANNEL - Both voices
+                            "channels": "dual"  # ✅ Will only work if enabled in Portal
                         }
                     )
                 
+                logger.info(f"📤 Recording API response: {record_response.status_code}")
+                logger.info(f"   Response body: {record_response.text[:500]}")
+                
                 if record_response.status_code == 200:
                     logger.info("="*80)
-                    logger.info("🔴 RECORDING STARTED - COMPLETE CONVERSATION")
-                    logger.info("   🎧 Dual-channel (Stereo)")
-                    logger.info("   🎧 Left: Customer | Right: Agent")
-                    logger.info("   📢 Recording from ANSWER to HANGUP!")
+                    logger.info("🔴 RECORDING STARTED")
+                    logger.info("   📢 If only ONE voice is heard, enable dual-channel in Portal!")
+                    logger.info("   🔗 https://portal.telnyx.com → Voice → Outbound Voice Profile")
                     logger.info("="*80)
                     
                     calls_collection.update_one(
@@ -738,62 +741,13 @@ async def telnyx_webhook(request: Request):
                         "timestamp": datetime.utcnow().isoformat()
                     })
                 else:
-                    logger.error(f"❌ Recording failed: {record_response.status_code} - {record_response.text}")
+                    logger.error(f"❌ Recording failed: {record_response.status_code}")
+                    logger.error(f"   Error: {record_response.text}")
                     
             except Exception as e:
                 logger.error(f"❌ Recording error: {str(e)}")
                 import traceback
                 logger.error(traceback.format_exc())
-            
-            # ✅ CREATE CONFERENCE (optional - for multi-party calls)
-            conference_name = f"conf-{internal_call_id}"
-            
-            if internal_call_id not in active_conferences:
-                logger.info(f"🎤 Creating conference: {conference_name}")
-                
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    conf_response = await client.post(
-                        f"{TELNYX_BASE_URL}/conferences",
-                        headers=headers,
-                        json={
-                            "call_control_id": call_control_id,
-                            "name": conference_name,
-                            "beep_enabled": "never"
-                        }
-                    )
-                
-                if conf_response.status_code == 200:
-                    conf_data = conf_response.json().get("data", {})
-                    conference_id = conf_data.get("id")
-                    
-                    active_conferences[internal_call_id] = {
-                        "conference_id": conference_id,
-                        "participants": [call_control_id]
-                    }
-                    
-                    logger.info(f"✅ Conference created: {conference_id}")
-                    
-                    calls_collection.update_one(
-                        {"call_id": internal_call_id},
-                        {"$set": {"conference_id": conference_id}}
-                    )
-            else:
-                # Join existing conference
-                conference_info = active_conferences[internal_call_id]
-                conference_id = conference_info["conference_id"]
-                
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    await client.post(
-                        f"{TELNYX_BASE_URL}/calls/{call_control_id}/actions/join",
-                        headers=headers,
-                        json={
-                            "call_control_id": call_control_id,
-                            "conference_name": conference_name
-                        }
-                    )
-                
-                active_conferences[internal_call_id]["participants"].append(call_control_id)
-                logger.info(f"✅ Joined conference: {conference_id}")
             
             # Broadcast update
             updated_call = calls_collection.find_one({"call_id": internal_call_id})

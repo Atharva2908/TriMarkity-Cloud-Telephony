@@ -22,6 +22,7 @@ interface Recording {
   format?: string
   channels?: string | number
   direction?: string
+  recording_type?: 'conference' | 'direct'  // NEW: Track recording type
 }
 
 interface RecordingManagerProps {
@@ -90,6 +91,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
             if (data.type === 'recording_started') {
               console.log('🔴 Recording started:', data.call_id)
+              console.log('   Type:', data.recording_type || 'direct')
+              
               setActiveRecordings(prev => {
                 // ✅ Prevent duplicate active recordings for same call_id
                 const exists = prev.some(rec => rec.call_id === data.call_id)
@@ -111,7 +114,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                     is_active: true,
                     format: data.format || 'wav',
                     channels: data.channels || 'dual',
-                    direction: data.direction || 'outbound'
+                    direction: data.direction || 'outbound',
+                    recording_type: data.recording_type || 'direct'
                   }
                 ]
               })
@@ -124,6 +128,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
             if (data.type === 'recording_added') {
               console.log('💾 Recording saved:', data.call_id)
+              console.log('   Recording type:', data.recording?.recording_type || 'unknown')
+              
               // Remove from active and refresh list to get the saved recording
               setActiveRecordings(prev => prev.filter(rec => rec.call_id !== data.call_id))
               fetchRecordings()
@@ -255,7 +261,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
             status: "completed",
             format: "mp3",
             channels: "dual",
-            direction: "outbound"
+            direction: "outbound",
+            recording_type: "conference"
           },
         ])
       } else {
@@ -275,6 +282,9 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         )
 
         console.log(`📼 Loaded ${validRecordings.length} valid recordings`)
+        console.log(`   Conference recordings: ${validRecordings.filter(r => r.recording_type === 'conference').length}`)
+        console.log(`   Direct recordings: ${validRecordings.filter(r => r.recording_type === 'direct' || !r.recording_type).length}`)
+        
         setRecordings(validRecordings)
       }
     } catch (err) {
@@ -394,7 +404,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
         const timestamp = new Date(recording.created_at).toISOString().split('T')[0]
         const channelSuffix = isDualChannel(recording.channels) ? '-STEREO' : '-MONO'
         const directionPrefix = recording.direction?.toUpperCase() || 'CALL'
-        link.download = `${directionPrefix}-${timestamp}-${recording.to_number}${channelSuffix}.${extension}`
+        const typePrefix = recording.recording_type === 'conference' ? 'CONFERENCE-' : ''
+        link.download = `${typePrefix}${directionPrefix}-${timestamp}-${recording.to_number}${channelSuffix}.${extension}`
 
         document.body.appendChild(link)
         link.click()
@@ -576,7 +587,8 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
               <p className="text-xs text-muted-foreground">
                 {activeRecordings.map(r => {
                   const dirIcon = r.direction === 'inbound' ? '📲' : '📞'
-                  return `${dirIcon} ${r.to_number} (Complete Conversation • Dual Channel)`
+                  const typeLabel = r.recording_type === 'conference' ? 'Conference (Single File)' : 'Direct'
+                  return `${dirIcon} ${r.to_number} (${typeLabel} • Dual Channel)`
                 }).join(', ')}
               </p>
             </div>
@@ -683,7 +695,7 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                 {searchTerm ? "No recordings found matching your search" : "No recordings yet"}
               </p>
               <p className="text-sm text-muted-foreground mt-1">
-                {searchTerm ? "Try a different search term" : "Complete conversation recordings will appear here automatically (one file per call)"}
+                {searchTerm ? "Try a different search term" : "Conference recordings will appear here automatically (one merged file per call)"}
               </p>
             </Card>
           ) : (
@@ -730,15 +742,21 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
                         </span>
                       )}
                       
-                      {/* Format & Channel Badge */}
+                      {/* Format & Channel Badge with Conference Indicator */}
                       {(recording.format || recording.channels) && (
-                        <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                        <span className={`text-xs px-2 py-1 rounded-full font-medium flex items-center gap-1 ${
                           isDualChannel(recording.channels) 
                             ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30' 
                             : 'bg-secondary text-muted-foreground'
                         }`}>
                           {recording.format?.toUpperCase() || 'WAV'}
                           {isDualChannel(recording.channels) && ' • Stereo • Full Conversation'}
+                          {/* NEW: Conference Recording Indicator */}
+                          {recording.recording_type === 'conference' && (
+                            <span title="Conference Recording (Single Merged File)">
+                              🎤
+                            </span>
+                          )}
                         </span>
                       )}
                     </div>
@@ -762,6 +780,11 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
 
                     <p className="text-xs text-muted-foreground">
                       From: <span className="font-mono font-medium">{recording.from_number}</span>
+                      {recording.recording_type === 'conference' && (
+                        <span className="ml-2 text-emerald-600 dark:text-emerald-400 font-medium">
+                          • Merged Conference Recording
+                        </span>
+                      )}
                     </p>
 
                     {/* Progress Bar */}
@@ -852,6 +875,11 @@ export function RecordingManager({ demoMode = false }: RecordingManagerProps) {
           <p className="text-sm text-center text-muted-foreground">
             Showing <span className="font-semibold text-foreground">{filteredRecordings.length}</span> of{" "}
             <span className="font-semibold text-foreground">{recordings.length}</span> complete conversation recordings
+            {recordings.filter(r => r.recording_type === 'conference').length > 0 && (
+              <span className="ml-1">
+                ({recordings.filter(r => r.recording_type === 'conference').length} conference merged)
+              </span>
+            )}
           </p>
         </Card>
       )}

@@ -1,5 +1,5 @@
 """
-WebRTC Bridge Module - Conference Recording for Single File Per Call (Mixed Mono)
+WebRTC Bridge Module - Conference Recording for Complete Conversations (Dual Channel)
 """
 
 import os
@@ -292,8 +292,8 @@ async def download_recording(call_id: str):
         format_type = recording.get("format", "wav").lower()
         content_type = "audio/wav" if format_type == "wav" else "audio/mpeg"
         
-        channels = recording.get("channels", "single")
-        channel_label = "mixed" if str(channels).lower() == "single" else "stereo"
+        channels = recording.get("channels", "dual")
+        channel_label = "STEREO" if str(channels).lower() == "dual" else "MIXED"
         
         filename = f"recording-{call_id}-{channel_label}.{format_type}"
         
@@ -511,12 +511,12 @@ async def initiate_call(request: InitiateCallRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# 🎤 CONFERENCE-BASED WEBHOOK (SINGLE MIXED MONO FILE) - FIXED
+# 🎤 CONFERENCE-BASED WEBHOOK (DUAL CHANNEL - BOTH VOICES)
 # ============================================================================
 
 @router.post("/webhook/telnyx")
 async def telnyx_webhook(request: Request):
-    """Handle webhooks - Conference recording with mixed mono audio"""
+    """Handle webhooks - Conference recording with dual channel (both voices in one file)"""
     global active_conferences
     
     payload = await request.json()
@@ -614,7 +614,7 @@ async def telnyx_webhook(request: Request):
                     recordings_collection = db.get_db()["recordings"]
                     
                     recording_format = "wav"
-                    channels = event_payload.get("channels", "single")
+                    channels = event_payload.get("channels", "dual")
                     
                     recording_data = {
                         "call_id": call_log["call_id"],
@@ -648,7 +648,8 @@ async def telnyx_webhook(request: Request):
                         }}
                     )
                     
-                    logger.info(f"💾 ✅ MIXED MONO conference recording saved: {call_log['call_id']}")
+                    channel_type = "DUAL-CHANNEL (STEREO)" if channels == "dual" else "SINGLE-CHANNEL (MONO)"
+                    logger.info(f"💾 ✅ {channel_type} conference recording saved: {call_log['call_id']}")
                     
                     await manager.broadcast({
                         "type": "recording_added",
@@ -733,7 +734,7 @@ async def telnyx_webhook(request: Request):
                     # ✅ STEP 2: Wait briefly, then start recording
                     await asyncio.sleep(0.5)
                     
-                    # ✅ START RECORDING ON CONFERENCE
+                    # ✅ START DUAL-CHANNEL RECORDING (BOTH VOICES)
                     try:
                         async with httpx.AsyncClient(timeout=10.0) as recording_client:
                             record_response = await recording_client.post(
@@ -741,7 +742,7 @@ async def telnyx_webhook(request: Request):
                                 headers=headers,
                                 json={
                                     "format": "wav",
-                                    "channels": "single"  # ✅ MIXED MONO
+                                    "channels": "dual"  # ✅ DUAL CHANNEL - Both voices (L=customer, R=you)
                                 }
                             )
                         
@@ -752,8 +753,10 @@ async def telnyx_webhook(request: Request):
                         if record_response.status_code == 200:
                             record_data = record_response.json().get("data", {})
                             
-                            logger.info("🔴 Conference recording started (SINGLE-CHANNEL MIXED MONO)")
-                            logger.info("   📢 Both participants mixed into ONE audio track")
+                            logger.info("🔴 Conference recording started (DUAL-CHANNEL STEREO)")
+                            logger.info("   🎧 Left channel: Customer voice")
+                            logger.info("   🎧 Right channel: Your voice")
+                            logger.info("   📢 Both voices in ONE file - Complete conversation!")
                             
                             calls_collection.update_one(
                                 {"call_id": internal_call_id},
@@ -761,7 +764,7 @@ async def telnyx_webhook(request: Request):
                                     "is_recording": True,
                                     "recording_requested": True,
                                     "recording_started_at": datetime.utcnow(),
-                                    "recording_channels": "single"
+                                    "recording_channels": "dual"  # ✅ DUAL
                                 }}
                             )
                             
@@ -769,7 +772,7 @@ async def telnyx_webhook(request: Request):
                                 "type": "recording_started",
                                 "call_id": internal_call_id,
                                 "recording_type": "conference",
-                                "channels": "single"
+                                "channels": "dual"  # ✅ DUAL
                             })
                         else:
                             logger.error(f"❌ Recording start failed: {record_response.status_code}")

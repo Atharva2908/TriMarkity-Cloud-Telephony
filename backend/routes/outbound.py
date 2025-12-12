@@ -5,16 +5,19 @@ from database import db
 from datetime import datetime, timedelta
 import uuid
 import asyncio
-import telnyx
+import httpx
 import os
 import logging
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
+TELNYX_BASE_URL = os.getenv("TELNYX_BASE_URL", "https://api.telnyx.com/v2")
 TELNYX_CONNECTION_ID = os.getenv("TELNYX_CONNECTION_ID")
-telnyx.api_key = TELNYX_API_KEY
+
 
 class OutboundCallRequest(BaseModel):
     to_number: str
@@ -23,14 +26,17 @@ class OutboundCallRequest(BaseModel):
     auto_reconnect: bool = True
     auto_hangup_duration: int = 60
 
+
 class CallRecordingRequest(BaseModel):
     duration: int
     url: str
     size: int
 
+
 class DTMFRequest(BaseModel):
     call_control_id: str
     digits: str
+
 
 class SpeakRequest(BaseModel):
     call_control_id: str
@@ -38,8 +44,10 @@ class SpeakRequest(BaseModel):
     voice: str = "female"
     language: str = "en-US"
 
+
 # Track active calls for reconnect and hangup logic
 active_calls = {}
+
 
 @router.post("/outbound/initiate")
 async def initiate_outbound_call(request: OutboundCallRequest):
@@ -47,27 +55,46 @@ async def initiate_outbound_call(request: OutboundCallRequest):
     call_id = str(uuid.uuid4())
     
     try:
-        # Create Telnyx call
-        call = telnyx.Call.create(
-            connection_id=TELNYX_CONNECTION_ID,
-            to=request.to_number,
-            from_=request.from_number,
-            webhook_url=f"{os.getenv('WEBHOOK_URL', 'https://your-domain.com')}/api/webhooks/call",
-            webhook_url_method="POST",
-        )
+        headers = {
+            "Authorization": f"Bearer {TELNYX_API_KEY}",
+            "Content-Type": "application/json"
+        }
         
-        telnyx_call_control_id = call.call_control_id
-        telnyx_session_id = call.call_session_id
+        # Create Telnyx call using REST API
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{TELNYX_BASE_URL}/calls",
+                headers=headers,
+                json={
+                    "connection_id": TELNYX_CONNECTION_ID,
+                    "to": request.to_number,
+                    "from": request.from_number,
+                    "webhook_url": f"{os.getenv('WEBHOOK_URL', 'https://your-domain.com')}/api/webhooks/call",
+                    "webhook_url_method": "POST",
+                }
+            )
+        
+        if response.status_code not in (200, 201):
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+        
+        call_data = response.json().get("data", {})
+        telnyx_call_control_id = call_data.get("call_control_id")
+        telnyx_session_id = call_data.get("call_session_id")
         
         logger.info(f"📞 Outbound call initiated: {call_id} -> {request.to_number}")
         
         # Speak TTS message if provided
         if request.tts_message:
-            call.speak(
-                payload=request.tts_message,
-                voice="female",
-                language="en-US"
-            )
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(
+                    f"{TELNYX_BASE_URL}/calls/{telnyx_call_control_id}/actions/speak",
+                    headers=headers,
+                    json={
+                        "payload": request.tts_message,
+                        "voice": "female",
+                        "language": "en-US"
+                    }
+                )
             logger.info(f"🔊 TTS message sent: {request.tts_message}")
         
     except Exception as e:
@@ -115,6 +142,7 @@ async def initiate_outbound_call(request: OutboundCallRequest):
         "message": f"Outbound call initiated. TTS: {request.tts_message or 'None'}"
     }
 
+
 @router.post("/send-dtmf")
 async def send_dtmf(request: DTMFRequest):
     """
@@ -124,25 +152,37 @@ async def send_dtmf(request: DTMFRequest):
     try:
         logger.info(f"🔢 Sending DTMF: {request.digits} to call {request.call_control_id}")
         
-        # Retrieve and send DTMF via Telnyx
-        call = telnyx.Call.retrieve(request.call_control_id)
-        call.send_dtmf(digits=request.digits)
-        
-        logger.info(f"✅ DTMF sent successfully")
-        
-        return {
-            "status": "success",
-            "call_control_id": request.call_control_id,
-            "digits": request.digits,
-            "message": f"DTMF tones '{request.digits}' sent successfully"
+        headers = {
+            "Authorization": f"Bearer {TELNYX_API_KEY}",
+            "Content-Type": "application/json"
         }
         
-    except Exception as e:
-        logger.error(f"❌ Telnyx DTMF error: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Telnyx error: {str(e)}")
+        # ✅ Use REST API to send DTMF
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            dtmf_response = await client.post(
+                f"{TELNYX_BASE_URL}/calls/{request.call_control_id}/actions/send_dtmf",
+                headers=headers,
+                json={"digits": request.digits}
+            )
+        
+        if dtmf_response.status_code == 200:
+            logger.info(f"✅ DTMF sent successfully: {request.digits}")
+            return {
+                "status": "success",
+                "call_control_id": request.call_control_id,
+                "digits": request.digits,
+                "message": f"DTMF tones '{request.digits}' sent successfully"
+            }
+        else:
+            logger.error(f"❌ DTMF failed: {dtmf_response.status_code} - {dtmf_response.text}")
+            raise HTTPException(status_code=400, detail=f"DTMF failed: {dtmf_response.text}")
+        
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ DTMF error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/speak")
 async def speak_on_call(request: SpeakRequest):
@@ -152,25 +192,39 @@ async def speak_on_call(request: SpeakRequest):
     try:
         logger.info(f"🔊 Speaking on call {request.call_control_id}: {request.text}")
         
-        call = telnyx.Call.retrieve(request.call_control_id)
-        call.speak(
-            payload=request.text,
-            voice=request.voice,
-            language=request.language
-        )
-        
-        logger.info(f"✅ TTS sent successfully")
-        
-        return {
-            "status": "success",
-            "call_control_id": request.call_control_id,
-            "text": request.text,
-            "message": "TTS message sent successfully"
+        headers = {
+            "Authorization": f"Bearer {TELNYX_API_KEY}",
+            "Content-Type": "application/json"
         }
         
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{TELNYX_BASE_URL}/calls/{request.call_control_id}/actions/speak",
+                headers=headers,
+                json={
+                    "payload": request.text,
+                    "voice": request.voice,
+                    "language": request.language
+                }
+            )
+        
+        if response.status_code == 200:
+            logger.info(f"✅ TTS sent successfully")
+            return {
+                "status": "success",
+                "call_control_id": request.call_control_id,
+                "text": request.text,
+                "message": "TTS message sent successfully"
+            }
+        else:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+        
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ TTS error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/{call_id}/hangup")
 async def hangup_outbound_call(call_id: str):
@@ -184,8 +238,16 @@ async def hangup_outbound_call(call_id: str):
     # Hangup via Telnyx if call_control_id exists
     try:
         if call.get("telnyx_call_control_id"):
-            telnyx_call = telnyx.Call.retrieve(call["telnyx_call_control_id"])
-            telnyx_call.hangup()
+            headers = {
+                "Authorization": f"Bearer {TELNYX_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(
+                    f"{TELNYX_BASE_URL}/calls/{call['telnyx_call_control_id']}/actions/hangup",
+                    headers=headers
+                )
             logger.info(f"📴 Telnyx call hung up: {call_id}")
     except Exception as e:
         logger.warning(f"⚠️ Telnyx hangup failed: {str(e)}")
@@ -215,9 +277,10 @@ async def hangup_outbound_call(call_id: str):
         "duration": duration
     }
 
+
 @router.post("/{call_id}/recording/start")
 async def start_recording(call_id: str):
-    """Start recording a call"""
+    """Start recording a call with DUAL-CHANNEL (stereo)"""
     calls_collection = db.get_db()["call_logs"]
     call = calls_collection.find_one({"call_id": call_id})
     
@@ -226,29 +289,51 @@ async def start_recording(call_id: str):
     
     try:
         if call.get("telnyx_call_control_id"):
-            telnyx_call = telnyx.Call.retrieve(call["telnyx_call_control_id"])
-            telnyx_call.record_start(
-                format="mp3",
-                channels="single"
-            )
-            
-            calls_collection.update_one(
-                {"call_id": call_id},
-                {"$set": {"is_recording": True, "recording_started_at": datetime.utcnow()}}
-            )
-            
-            logger.info(f"🔴 Recording started for call: {call_id}")
-            
-            return {
-                "call_id": call_id,
-                "recording_started": True,
-                "message": "Recording started successfully"
+            headers = {
+                "Authorization": f"Bearer {TELNYX_API_KEY}",
+                "Content-Type": "application/json"
             }
+            
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{TELNYX_BASE_URL}/calls/{call['telnyx_call_control_id']}/actions/record_start",
+                    headers=headers,
+                    json={
+                        "format": "wav",
+                        "channels": "dual"  # ✅ DUAL-CHANNEL RECORDING
+                    }
+                )
+            
+            if response.status_code == 200:
+                calls_collection.update_one(
+                    {"call_id": call_id},
+                    {"$set": {
+                        "is_recording": True,
+                        "recording_started_at": datetime.utcnow(),
+                        "recording_channels": "dual",
+                        "recording_format": "wav"
+                    }}
+                )
+                
+                logger.info(f"🔴 DUAL-CHANNEL recording started for call: {call_id}")
+                
+                return {
+                    "call_id": call_id,
+                    "recording_started": True,
+                    "channels": "dual",
+                    "format": "wav",
+                    "message": "Dual-channel (stereo) recording started successfully"
+                }
+            else:
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Recording start error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     
     raise HTTPException(status_code=400, detail="Call control ID not found")
+
 
 @router.post("/{call_id}/recording/stop")
 async def stop_recording(call_id: str):
@@ -261,26 +346,40 @@ async def stop_recording(call_id: str):
     
     try:
         if call.get("telnyx_call_control_id"):
-            telnyx_call = telnyx.Call.retrieve(call["telnyx_call_control_id"])
-            telnyx_call.record_stop()
-            
-            calls_collection.update_one(
-                {"call_id": call_id},
-                {"$set": {"is_recording": False}}
-            )
-            
-            logger.info(f"⏹️ Recording stopped for call: {call_id}")
-            
-            return {
-                "call_id": call_id,
-                "recording_stopped": True,
-                "message": "Recording stopped successfully"
+            headers = {
+                "Authorization": f"Bearer {TELNYX_API_KEY}",
+                "Content-Type": "application/json"
             }
+            
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{TELNYX_BASE_URL}/calls/{call['telnyx_call_control_id']}/actions/record_stop",
+                    headers=headers
+                )
+            
+            if response.status_code == 200:
+                calls_collection.update_one(
+                    {"call_id": call_id},
+                    {"$set": {"is_recording": False}}
+                )
+                
+                logger.info(f"⏹️ Recording stopped for call: {call_id}")
+                
+                return {
+                    "call_id": call_id,
+                    "recording_stopped": True,
+                    "message": "Recording stopped successfully"
+                }
+            else:
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Recording stop error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     
     raise HTTPException(status_code=400, detail="Call control ID not found")
+
 
 @router.get("/recordings/list")
 async def list_recordings():
@@ -293,6 +392,7 @@ async def list_recordings():
         rec["_id"] = str(rec["_id"])
     
     return {"recordings": recordings}
+
 
 @router.get("/recordings/{call_id}")
 async def get_recording(call_id: str):
@@ -307,6 +407,7 @@ async def get_recording(call_id: str):
     recording["_id"] = str(recording["_id"])
     return recording
 
+
 @router.delete("/recordings/{call_id}/delete")
 async def delete_recording(call_id: str):
     """Delete a recording"""
@@ -320,6 +421,7 @@ async def delete_recording(call_id: str):
     
     return {"message": "Recording deleted", "call_id": call_id}
 
+
 async def _auto_hangup(call_id: str, duration: int):
     """Automatically hangup a call after specified duration"""
     await asyncio.sleep(duration)
@@ -331,8 +433,16 @@ async def _auto_hangup(call_id: str, duration: int):
         # Hangup via Telnyx
         try:
             if call.get("telnyx_call_control_id"):
-                telnyx_call = telnyx.Call.retrieve(call["telnyx_call_control_id"])
-                telnyx_call.hangup()
+                headers = {
+                    "Authorization": f"Bearer {TELNYX_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    await client.post(
+                        f"{TELNYX_BASE_URL}/calls/{call['telnyx_call_control_id']}/actions/hangup",
+                        headers=headers
+                    )
                 logger.info(f"⏰ Auto-hangup executed for call: {call_id}")
         except Exception as e:
             logger.error(f"❌ Auto-hangup failed: {str(e)}")
@@ -350,6 +460,7 @@ async def _auto_hangup(call_id: str, duration: int):
         # Clean up
         if call_id in active_calls:
             del active_calls[call_id]
+
 
 async def _handle_reconnect(call_id: str):
     """Handle automatic reconnection on call failure"""
@@ -379,31 +490,47 @@ async def _handle_reconnect(call_id: str):
         
         # Re-initiate call
         try:
-            call = telnyx.Call.create(
-                connection_id=TELNYX_CONNECTION_ID,
-                to=call_info["to_number"],
-                from_=call_info["from_number"],
-                webhook_url=f"{os.getenv('WEBHOOK_URL', 'https://your-domain.com')}/api/webhooks/call",
-                webhook_url_method="POST",
-            )
+            headers = {
+                "Authorization": f"Bearer {TELNYX_API_KEY}",
+                "Content-Type": "application/json"
+            }
             
-            # Update with new call control ID
-            call_info["call_control_id"] = call.call_control_id
-            
-            calls_collection.update_one(
-                {"call_id": call_id},
-                {
-                    "$set": {
-                        "telnyx_call_control_id": call.call_control_id,
-                        "telnyx_session_id": call.call_session_id
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{TELNYX_BASE_URL}/calls",
+                    headers=headers,
+                    json={
+                        "connection_id": TELNYX_CONNECTION_ID,
+                        "to": call_info["to_number"],
+                        "from": call_info["from_number"],
+                        "webhook_url": f"{os.getenv('WEBHOOK_URL', 'https://your-domain.com')}/api/webhooks/call",
+                        "webhook_url_method": "POST",
                     }
-                }
-            )
+                )
             
-            logger.info(f"✅ Reconnection successful for call: {call_id}")
+            if response.status_code in (200, 201):
+                call_data = response.json().get("data", {})
+                
+                # Update with new call control ID
+                call_info["call_control_id"] = call_data.get("call_control_id")
+                
+                calls_collection.update_one(
+                    {"call_id": call_id},
+                    {
+                        "$set": {
+                            "telnyx_call_control_id": call_data.get("call_control_id"),
+                            "telnyx_session_id": call_data.get("call_session_id")
+                        }
+                    }
+                )
+                
+                logger.info(f"✅ Reconnection successful for call: {call_id}")
+            else:
+                raise Exception(f"API returned {response.status_code}: {response.text}")
             
         except Exception as e:
             logger.error(f"❌ Reconnection failed: {str(e)}")
+
 
 @router.get("/health")
 async def outbound_health():

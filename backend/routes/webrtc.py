@@ -534,7 +534,7 @@ async def telnyx_webhook(request: Request):
             "Content-Type": "application/json"
         }
         
-        # Handle inbound calls
+        # ===== INBOUND CALL INITIATED =====
         if event_type == "call.initiated":
             client_state_b64 = event_payload.get("client_state", "")
             
@@ -587,7 +587,7 @@ async def telnyx_webhook(request: Request):
                 
                 return {"status": "ok"}
         
-        # 🎤 CONFERENCE RECORDING SAVED (SINGLE FILE!)
+        # ===== CONFERENCE RECORDING SAVED =====
         if event_type == "conference.recording.saved":
             conference_id = event_payload.get("conference_id")
             recording_urls = event_payload.get("recording_urls", {})
@@ -629,11 +629,10 @@ async def telnyx_webhook(request: Request):
                         "status": "completed",
                         "format": recording_format,
                         "channels": channels,
-                        "recording_type": "conference",  # Mark as conference
+                        "recording_type": "conference",
                         "filename": f"recording-{call_log['call_id']}.{recording_format}"
                     }
                     
-                    # Upsert - single recording per call
                     recordings_collection.update_one(
                         {"call_id": call_log["call_id"]},
                         {"$set": recording_data},
@@ -659,7 +658,7 @@ async def telnyx_webhook(request: Request):
             
             return {"status": "ok"}
         
-        # Extract client state
+        # ===== Extract client state for other events =====
         client_state_b64 = event_payload.get("client_state", "")
         if not client_state_b64:
             return {"status": "ignored"}
@@ -677,17 +676,19 @@ async def telnyx_webhook(request: Request):
             logger.warning(f"⚠️ Call not found: {internal_call_id}")
             return {"status": "call not found"}
         
-        # 🎤 CREATE OR JOIN CONFERENCE ON ANSWER
+        # ===== 🎤 CALL ANSWERED - CREATE OR JOIN CONFERENCE =====
         if event_type == "call.answered":
             call_control_id = event_payload.get("call_control_id")
+            direction = client_state.get("leg", "outbound")
             
-            logger.info(f"📱 Call answered: {call_control_id}")
+            logger.info(f"✅ Call answered: {call_control_id} ({direction})")
             
             conference_name = f"conf-{internal_call_id}"
             
+            # ✅ FIX: Check if conference exists for THIS internal_call_id
             if internal_call_id not in active_conferences:
-                # First leg - create conference
-                logger.info(f"🎤 Creating conference: {conference_name}")
+                # 🎤 FIRST LEG - CREATE CONFERENCE
+                logger.info(f"🎤 Creating NEW conference: {conference_name}")
                 
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     conf_response = await client.post(
@@ -697,45 +698,59 @@ async def telnyx_webhook(request: Request):
                             "call_control_id": call_control_id,
                             "name": conference_name,
                             "beep_enabled": "never",
+                            "record": "dual-channel",  # ✅ FIX: ENABLE DUAL-CHANNEL
+                            "record_format": "wav"
                         }
                     )
                 
                 if conf_response.status_code == 200:
                     conf_data = conf_response.json().get("data", {})
                     conference_id = conf_data.get("id")
+                    
+                    # ✅ Store conference info
                     active_conferences[internal_call_id] = {
-                        "id": conference_id,
-                        "name": conference_name,
-                        "participants": [call_control_id]
+                        "conference_id": conference_id,
+                        "conference_name": conference_name,
+                        "participants": [call_control_id],
+                        "created_at": datetime.utcnow()
                     }
                     
                     logger.info(f"✅ Conference created: {conference_id}")
+                    logger.info(f"   Participant: {call_control_id} ({direction})")
                     
-                    # Start conference recording (single file!)
-                    await asyncio.sleep(1.0)
+                    # Save conference ID to database
+                    calls_collection.update_one(
+                        {"call_id": internal_call_id},
+                        {"$set": {
+                            "status": "active",
+                            "answered_at": datetime.utcnow(),
+                            "conference_id": conference_id,
+                            "recording_type": "conference"
+                        }}
+                    )
                     
+                    # Wait before starting recording
+                    await asyncio.sleep(0.5)
+                    
+                    # ✅ START DUAL-CHANNEL RECORDING
                     async with httpx.AsyncClient(timeout=10.0) as client:
                         record_response = await client.post(
                             f"{TELNYX_BASE_URL}/conferences/{conference_id}/actions/record_start",
                             headers=headers,
                             json={
                                 "format": "wav",
-                                "channels": "dual"
+                                "channels": "dual"  # ✅ FIX: DUAL CHANNEL
                             }
                         )
                     
                     if record_response.status_code == 200:
-                        logger.info("✅ Conference recording started")
+                        logger.info("🔴 Conference recording started (DUAL-CHANNEL)")
                         
                         calls_collection.update_one(
                             {"call_id": internal_call_id},
                             {"$set": {
-                                "status": "active",
-                                "answered_at": datetime.utcnow(),
                                 "is_recording": True,
                                 "recording_requested": True,
-                                "recording_type": "conference",
-                                "conference_id": conference_id,
                                 "recording_started_at": datetime.utcnow()
                             }}
                         )
@@ -743,26 +758,38 @@ async def telnyx_webhook(request: Request):
                         await manager.broadcast({
                             "type": "recording_started",
                             "call_id": internal_call_id,
-                            "recording_type": "conference"
+                            "recording_type": "conference",
+                            "channels": "dual"
                         })
+                else:
+                    logger.error(f"❌ Failed to create conference: {conf_response.text}")
+            
             else:
-                # Subsequent leg - join existing conference
-                conference_id = active_conferences[internal_call_id]["id"]
-                logger.info(f"🔗 Joining conference: {conference_id}")
+                # 🔗 SECOND LEG - JOIN EXISTING CONFERENCE
+                conference_info = active_conferences[internal_call_id]
+                conference_id = conference_info["conference_id"]
+                
+                logger.info(f"🔗 Joining EXISTING conference: {conference_id}")
+                logger.info(f"   New participant: {call_control_id} ({direction})")
                 
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     join_response = await client.post(
-                        f"{TELNYX_BASE_URL}/conferences/{conference_id}/actions/join",
+                        f"{TELNYX_BASE_URL}/calls/{call_control_id}/actions/join",
                         headers=headers,
                         json={
+                            "conference_name": conference_name,
                             "call_control_id": call_control_id
                         }
                     )
                 
                 if join_response.status_code == 200:
                     active_conferences[internal_call_id]["participants"].append(call_control_id)
-                    logger.info(f"✅ Call joined conference: {call_control_id}")
+                    logger.info(f"✅ {direction.upper()} leg joined conference")
+                    logger.info(f"   Total participants: {len(active_conferences[internal_call_id]['participants'])}")
+                else:
+                    logger.error(f"❌ Failed to join conference: {join_response.text}")
             
+            # Broadcast call answered
             updated_call = calls_collection.find_one({"call_id": internal_call_id})
             if updated_call:
                 updated_call["_id"] = str(updated_call["_id"])
@@ -771,6 +798,7 @@ async def telnyx_webhook(request: Request):
                     "call": updated_call
                 })
         
+        # ===== CALL HANGUP =====
         elif event_type in ["call.hangup", "call.ended"]:
             hangup_cause = event_payload.get("hangup_cause", "normal")
             hangup_source = event_payload.get("hangup_source", "unknown")
@@ -821,7 +849,10 @@ async def telnyx_webhook(request: Request):
         
     except Exception as e:
         logger.error(f"❌ Webhook error: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {"status": "error", "message": str(e)}
+
 
 # ============================================================================
 # HANGUP

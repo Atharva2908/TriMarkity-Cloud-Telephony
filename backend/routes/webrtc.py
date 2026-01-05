@@ -549,7 +549,7 @@ async def telnyx_webhook(request: Request):
                 await log_telnyx_request(f"/calls/{call_control_id}/actions/answer", call_control_id)
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     answer_response = await client.post(
-                        f"{TELNYX_BASE_URL}/calls/{call_control_id}/actions/answer",
+                        f"{TELNYX_BASE_URL}/call_control/{call_control_id}/answer",
                         headers=headers,
                         json={
                             "client_state": base64.b64encode(json.dumps({
@@ -697,7 +697,7 @@ async def telnyx_webhook(request: Request):
                 
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     record_response = await client.post(
-                        f"{TELNYX_BASE_URL}/calls/{call_control_id}/actions/start-recording",
+                        f"{TELNYX_BASE_URL}/call_control/{call_control_id}/recordings",
                         headers=headers,
                         json={
                             "format": "wav",

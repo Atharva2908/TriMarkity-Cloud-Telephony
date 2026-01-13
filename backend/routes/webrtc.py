@@ -721,7 +721,7 @@ async def telnyx_webhook(request: Request):
                     logger.info("   📢 If only ONE voice is heard, enable dual-channel in Portal!")
                     logger.info("   🔗 https://portal.telnyx.com → Voice → Outbound Voice Profile")
                     logger.info("="*80)
-                        
+                    
                     calls_collection.update_one(
                         {"call_id": internal_call_id},
                         {"$set": {

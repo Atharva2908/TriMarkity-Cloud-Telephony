@@ -1,7 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from fastapi.responses import StreamingResponse  # ✅ Changed this line
+from fastapi.responses import StreamingResponse
 import logging
 from database import db
 from datetime import datetime
@@ -10,8 +10,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from routes import analytics_ws
-import httpx   # ✅ Add this if not present
-import os      # ✅ Add this if not present
+import httpx
 
 # ----------------------------
 # Logging Setup
@@ -98,7 +97,7 @@ app.add_middleware(
 )
 
 # ----------------------------
-# Core Routes - FIXED PREFIXES ✅
+# Core Routes - ✅ SIP TRUNK ADDED
 # ----------------------------
 try:
     from routes import (
@@ -112,6 +111,7 @@ try:
         numbers,
         analytics,
         recordings,
+        sip_trunk,  # ✅ NEW: SIP Trunk Router
     )
 
     # ✅ All routers with consistent prefix pattern
@@ -127,12 +127,16 @@ try:
     # ✅ FIXED: Add prefix here, recordings.py has NO prefix
     app.include_router(recordings.router, prefix="/api/calls/recordings", tags=["recordings"])
     
+    # ✅ NEW: SIP TRUNK ROUTER (creates /api/initiate)
+    app.include_router(sip_trunk.router, prefix="/api", tags=["sip"])  # ← THIS FIXES 404
+    
     app.include_router(webhooks.router, prefix="", tags=["webhooks"])
     app.include_router(analytics_ws.router, tags=["analytics-ws"])
     
     logger.info("✅ Core routes loaded successfully")
     logger.info(f"✅ Recordings router registered at: /api/calls/recordings")
     logger.info(f"✅ WebRTC router registered at: /api/webrtc")
+    logger.info(f"✅ SIP Trunk router registered at: /api/initiate")  # ✅ NEW LOG
 except ImportError as e:
     logger.warning(f"⚠️ Some core routes not available: {e}")
 except Exception as e:
@@ -162,8 +166,6 @@ except Exception as e:
 # ----------------------------
 # WebSocket Endpoints
 # ----------------------------
-
-# ✅ Main WebSocket endpoint for call status updates
 @app.websocket("/ws/calls")
 async def websocket_endpoint(websocket: WebSocket):
     """Main WebSocket for real-time call status updates"""
@@ -182,9 +184,6 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}")
         await call_manager.disconnect(websocket)
 
-# ✅ Note: /api/webrtc/ws is handled by webrtc.router (in webrtc.py)
-# This allows the call logs page to connect to its own WebSocket
-
 # ----------------------------
 # Health & Status Endpoints
 # ----------------------------
@@ -200,6 +199,7 @@ async def health():
         "environment": ENVIRONMENT,
         "database": db_status,
         "websocket_connections": len(call_manager.active_connections),
+        "sip_trunk": "available",  # ✅ NEW: SIP status
         "timestamp": datetime.utcnow().isoformat(),
     }
 
@@ -210,6 +210,7 @@ async def root():
         "version": "1.0.0",
         "docs": "/docs",
         "health": "/health",
+        "sip_trunk": "/api/initiate",  # ✅ NEW: SIP endpoint docs
     }
 
 @app.get("/api/status")
@@ -230,6 +231,7 @@ async def api_status():
             "api": {
                 "contacts": "/api/contacts",
                 "calls": "/api/calls",
+                "sip_trunk": "/api/initiate",  # ✅ NEW: SIP endpoint listed
                 "call_logs": "/api/webrtc/logs",
                 "recordings": "/api/calls/recordings/list",
                 "webrtc": "/api/webrtc",
